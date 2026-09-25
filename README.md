@@ -99,12 +99,12 @@ Un administrateur crée les comptes depuis l'onglet **Utilisateurs**.
 ### 1. Sur GitHub (le code seul)
 
 ```bash
-cd comptabilite-poisson
+cd soft-comptabilite
 git init
 git add .
 git commit -m "Comptabilite vente de poisson"
 git branch -M main
-git remote add origin https://github.com/VOTRE-PSEUDO/comptabilite-poisson.git
+git remote add origin https://github.com/VOTRE-PSEUDO/soft-comptabilite.git
 git push -u origin main
 ```
 
@@ -127,7 +127,7 @@ npm i -g flyctl
 fly auth login
 
 # 3. Créer l'application (indispensable AVANT le volume)
-fly launch --no-deploy --copy-config --name comptabilite-poisson
+fly launch --no-deploy --copy-config --name soft-comptabilite
 
 # 4. Créer le volume persistant (UNE SEULE FOIS — il contient vos données)
 fly volumes create compta_data --size 1 --region cdg
@@ -229,7 +229,7 @@ Filtres acceptés : `debut`, `fin`, `type` (`entree`\|`sortie`\|`investissement`
 ## Structure
 
 ```
-comptabilite-poisson/
+soft-comptabilite/
 ├── server.js          serveur HTTP, routage, en-têtes de sécurité
 ├── auth.js            sessions, cookies, CSRF, limitation des tentatives
 ├── db.js              schéma SQLite, calculs, scrypt, export

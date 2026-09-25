@@ -1,4 +1,4 @@
-app = "comptabilite-poisson"
+app = "soft-comptabilite"
 primary_region = "cdg"
 
 [build]
