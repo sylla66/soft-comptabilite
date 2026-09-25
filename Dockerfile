@@ -1,5 +1,8 @@
-# Image Node.js officielle, version LTS
-FROM node:22-alpine
+# Image Node.js officielle, version 24 (celle utilisee et testee en developpement).
+# NE PAS repasser en node:22 : node:sqlite n'y est disponible sans drapeau
+# qu'a partir de 22.13, et le tag "22" est flottant. En cas de downgrade,
+# le serveur refuse de demarrer ("Cannot find module 'node:sqlite'").
+FROM node:24-alpine
 
 # Ne jamais executer le serveur en root
 RUN addgroup -S compta && adduser -S compta -G compta
