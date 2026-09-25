@@ -90,7 +90,19 @@ function parserCookies(req) {
 
 const enProduction = () => process.env.NODE_ENV === 'production';
 
-function cookieSession(jeton, maxAge = DUREE_COOKIE_S) {
+/**
+ * Le cookie "Secure" n'est pose que si la requete arrive VRAIMENT en HTTPS.
+ * Indispensable derriere un reverse proxy (Fly.io, nginx) qui transmet
+ * X-Forwarded-Proto, et indispensable pour pouvoir tester en local sur
+ * http://localhost : un navigateur refuse un cookie Secure en HTTP clair.
+ */
+function estHttps(req) {
+  const proto = req.headers['x-forwarded-proto'];
+  if (typeof proto === 'string' && proto.split(',')[0].trim().toLowerCase() === 'https') return true;
+  return req.socket && req.socket.encrypted === true;
+}
+
+function cookieSession(jeton, maxAge = DUREE_COOKIE_S, req = null) {
   const parts = [
     `${COOKIE}=${jeton}`,
     'Path=/',
@@ -98,11 +110,11 @@ function cookieSession(jeton, maxAge = DUREE_COOKIE_S) {
     'SameSite=Strict',
     `Max-Age=${maxAge}`,
   ];
-  if (enProduction()) parts.push('Secure');
+  if (enProduction() && (!req || estHttps(req))) parts.push('Secure');
   return parts.join('; ');
 }
 
-const cookieVide = () => cookieSession('', 0);
+const cookieVide = (req) => cookieSession('', 0, req);
 
 /* ------------------------------------------------------------------ */
 /* Session et acces                                                   */
@@ -162,7 +174,7 @@ function verifierAcces(req, droit) {
 
 module.exports = {
   COOKIE, EN_TETES_SECURITE, DUREE_COOKIE_S,
-  parserCookies, cookieSession, cookieVide, enProduction,
+  parserCookies, cookieSession, cookieVide, enProduction, estHttps,
   session, estConnecte, estAdmin, aLeDroit, verifierAcces,
   tentativeAutorisee, enregistrerEchec, reinitialiserTentatives, ip,
 };

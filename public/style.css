@@ -85,6 +85,11 @@ h2 { font-size: 1.02rem; margin-bottom: 1rem; }
 .btn-principal.large { width: 100%; padding: .75rem; font-size: .95rem; margin-top: .3rem; }
 .message-erreur { color: var(--rouge); font-size: .84rem; font-weight: 600; margin: 0 0 .6rem; min-height: 1.2em; }
 .note-securite { color: var(--gris); font-size: .76rem; margin: 1rem 0 0; }
+.alerte-alerte {
+  background: #fffbeb; border: 1px solid #fcd34d; border-left: 4px solid #f59e0b;
+  border-radius: 8px; padding: .8rem .9rem; font-size: .82rem; text-align: left;
+  color: #78350f; margin-bottom: 1.2rem; line-height: 1.5;
+}
 
 /* ---------- Nature investissement ---------- */
 .invest-txt { color: var(--violet); font-weight: 700; }

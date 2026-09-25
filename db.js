@@ -100,7 +100,6 @@ db.exec(`
     actif        INTEGER NOT NULL DEFAULT 1,
     cree_le      TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
   );
-
   CREATE TABLE IF NOT EXISTS sessions (
     token_hash TEXT PRIMARY KEY,
     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -147,6 +146,12 @@ db.exec(`
   } finally {
     db.exec('PRAGMA foreign_keys = ON');
   }
+})();
+
+(function migrerColonneChangementMdp() {
+  const colonnes = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
+  if (colonnes.includes('doit_changer_mdp')) return;
+  db.exec('ALTER TABLE users ADD COLUMN doit_changer_mdp INTEGER NOT NULL DEFAULT 0');
 })();
 
 /* ------------------------------------------------------------------ */
@@ -469,7 +474,16 @@ function exportCsv(f = {}) {
 /* ------------------------------------------------------------------ */
 
 const mapUser = (r) =>
-  r ? { id: Number(r.id), nom: r.nom, role: r.role, actif: Number(r.actif) === 1, cree_le: r.cree_le } : null;
+  r
+    ? {
+        id: Number(r.id),
+        nom: r.nom,
+        role: r.role,
+        actif: Number(r.actif) === 1,
+        cree_le: r.cree_le,
+        doit_changer_mdp: Number(r.doit_changer_mdp) === 1,
+      }
+    : null;
 
 const listerUtilisateurs = () =>
   db.prepare('SELECT * FROM users ORDER BY id').all().map(mapUser);
@@ -481,7 +495,7 @@ const getUtilisateurParNom = (nom) =>
 
 const DUREE_SESSION_JOURS = 7;
 
-async function creerUtilisateur({ nom, mot_de_passe, role = 'saisie', actif = true }) {
+async function creerUtilisateur({ nom, mot_de_passe, role = 'saisie', actif = true, doit_changer_mdp = false }) {
   const nomPropre = String(nom || '').trim();
   if (!nomPropre) invalide("Le nom d'utilisateur est obligatoire.");
   if (!['admin', 'saisie'].includes(role)) invalide("Le rôle doit être 'admin' ou 'saisie'.");
@@ -493,8 +507,8 @@ async function creerUtilisateur({ nom, mot_de_passe, role = 'saisie', actif = tr
   const roleFinal = Number(nbAdmins.n) === 0 ? 'admin' : role;
 
   const res = await db
-    .prepare('INSERT INTO users (nom, mot_de_passe, role, actif) VALUES (?, ?, ?, ?)')
-    .run(nomPropre, await hacherMotDePasse(mdp), roleFinal, actif ? 1 : 0);
+    .prepare('INSERT INTO users (nom, mot_de_passe, role, actif, doit_changer_mdp) VALUES (?, ?, ?, ?, ?)')
+    .run(nomPropre, await hacherMotDePasse(mdp), roleFinal, actif ? 1 : 0, doit_changer_mdp ? 1 : 0);
   return getUtilisateur(Number(res.lastInsertRowid));
 }
 
@@ -521,7 +535,8 @@ async function modifierUtilisateur(id, { nom, mot_de_passe, role, actif }) {
   }
   if (mot_de_passe !== undefined && String(mot_de_passe) !== '') {
     if (String(mot_de_passe).length < 8) invalide('Le mot de passe doit contenir au moins 8 caractères.');
-    db.prepare('UPDATE users SET mot_de_passe = ? WHERE id = ?').run(await hacherMotDePasse(String(mot_de_passe)), id);
+    db.prepare('UPDATE users SET mot_de_passe = ?, doit_changer_mdp = 0 WHERE id = ?')
+      .run(await hacherMotDePasse(String(mot_de_passe)), id);
     db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
   }
   return getUtilisateur(id);

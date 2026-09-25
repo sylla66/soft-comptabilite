@@ -126,18 +126,50 @@ async function verifierPremierLancement() {
       console.error('\n  ADMIN_PASSWORD doit contenir au moins 8 caracteres.');
       process.exit(1);
     }
-    await db.creerUtilisateur({ nom: process.env.ADMIN_USER || 'admin', mot_de_passe: mdp, role: 'admin' });
-    console.log(`\n  Compte administrateur cree : ${process.env.ADMIN_USER || 'admin'}`);
+    await db.creerUtilisateur({
+      nom: process.env.ADMIN_USER || 'admin',
+      mot_de_passe: mdp,
+      role: 'admin',
+      doit_changer_mdp: true,
+    });
+    console.log('\n  ============================================================');
+    console.log('   PREMIER LANCEMENT - compte administrateur cree');
+    console.log(`      Identifiant : ${process.env.ADMIN_USER || 'admin'}`);
+    console.log('      Mot de passe : celui defini dans ADMIN_PASSWORD');
+    console.log('');
+    console.log('   Un changement de mot de passe vous sera demande a la');
+    console.log('   premiere connexion. Faites-le immediatement.');
+    console.log('   Ensuite, SUPPRIMEZ le secret afin qu\'il ne soit plus exposé :');
+    console.log('       flyctl secrets unset ADMIN_PASSWORD');
+    console.log('  ============================================================\n');
   } else {
-    const genere = crypto.randomBytes(9).toString('base64url');
-    await db.creerUtilisateur({ nom: 'admin', mot_de_passe: genere, role: 'admin' });
+    const genere = crypto.randomBytes(12).toString('base64url');
+    await db.creerUtilisateur({ nom: 'admin', mot_de_passe: genere, role: 'admin', doit_changer_mdp: true });
     console.log('\n  ============================================================');
     console.log('   PREMIER LANCEMENT - notez ces identifiants :');
-    console.log(`      Identifiant : admin`);
+    console.log('      Identifiant : admin');
     console.log(`      Mot de passe : ${genere}`);
-    console.log('   Changez-le des que vous etes connecte.');
+    console.log('');
+    console.log('   Un changement de mot de passe vous sera demande a la');
+    console.log('   premiere connexion.');
     console.log('  ============================================================\n');
   }
+}
+
+/**
+ * Si la base est vide alors qu'il y a des operations, le volume persistant
+ * n'est pas la ou on l'attend. Sans cet avertissement, un nouvel admin serait
+ * cree en silence avec un mot de passe deja connu.
+ */
+function avertirSiVolumePerdu() {
+  const nbOps = Number(db.db.prepare('SELECT COUNT(*) AS n FROM operations').get().n);
+  if (nbOps === 0 || db.compterUtilisateurs() > 0) return;
+  console.log('\n  ###########################################################');
+  console.log('   ATTENTION : aucun utilisateur trouve, mais ' + nbOps + ' operation(s)');
+  console.log('   existent. Le volume persistant n\'est probablement pas');
+  console.log('   monte sur /data. Verifiez "flyctl volumes list".');
+  console.log('   NE CONNECTEZ PAS : vous creeriez un admin sur une base vide.');
+  console.log('  ###########################################################\n');
 }
 
 /* ------------------------------------------------------------------ */
@@ -146,7 +178,7 @@ async function verifierPremierLancement() {
 
 const ROUTES_API = [
   /^\/api\/session$/, /^\/api\/connexion$/, /^\/api\/deconnexion$/,
-  /^\/api\/utilisateurs$/, /^\/api\/utilisateurs\/[^/]+$/,
+  /^\/api\/utilisateurs$/, /^\/api\/utilisateurs\/[^/]+\/mot-de-passe$/, /^\/api\/utilisateurs\/[^/]+$/,
   /^\/api\/categories$/, /^\/api\/categories\/[^/]+$/,
   /^\/api\/operations$/, /^\/api\/operations\/[^/]+$/,
   /^\/api\/stats$/, /^\/api\/export\.csv$/, /^\/api\/sauvegarde$/,
@@ -181,25 +213,63 @@ async function router(req, res) {
     const { jeton, csrf } = db.creerSession(utilisateur.id);
     return envoyerJson(res, 200,
       { utilisateur, csrf },
-      { 'Set-Cookie': auth.cookieSession(jeton) });
+      { 'Set-Cookie': auth.cookieSession(jeton, auth.DUREE_COOKIE_S, req) });
   }
 
   /* ---- Deconnexion ---- */
   if (methode === 'POST' && chemin === '/api/deconnexion') {
     db.supprimerSession(auth.parserCookies(req)[auth.COOKIE]);
     return envoyerJson(res, 200, { deconnecte: true },
-      { 'Set-Cookie': auth.cookieVide() });
+      { 'Set-Cookie': auth.cookieVide(req) });
   }
 
   /* ---- Session courante ---- */
   if (methode === 'GET' && chemin === '/api/session') {
     const s = auth.session(req);
     if (!s) return envoyerJson(res, 200, { connecte: false });
+    const complet = db.getUtilisateur(s.id);
     return envoyerJson(res, 200, {
       connecte: true,
-      utilisateur: { id: s.id, nom: s.nom, role: s.role },
+      // doit_changer_mdp doit etre transmis ici aussi : sinon un simple
+      // rechargement de la page permettrait d'echapper au changement obligatoire.
+      utilisateur: {
+        id: s.id,
+        nom: s.nom,
+        role: s.role,
+        doit_changer_mdp: complet ? complet.doit_changer_mdp : false,
+      },
       csrf: s.csrf,
     });
+  }
+
+  /* ---- Changer SON propre mot de passe (accessible meme si changement impose) ---- */
+  if (methode === 'PUT' && chemin.endsWith('/mot-de-passe')) {
+    const s = auth.session(req);
+    if (!s) return envoyerErreur(res, 401, 'Authentification requise.');
+    const id = Number(chemin.split('/')[3]);
+    if (id !== s.id) return envoyerErreur(res, 403, "Vous ne pouvez changer que votre propre mot de passe.");
+    if (req.headers['x-csrf-token'] !== s.csrf) return envoyerErreur(res, 403, 'Jeton CSRF invalide. Rechargez la page.');
+
+    const { actuel, nouveau } = await lireCorps(req);
+    const u = db.getUtilisateur(id);
+    if (!u) return envoyerErreur(res, 404, 'Utilisateur introuvable.');
+    if (!(await db.verifierMotDePasse(String(actuel || ''), db.db.prepare('SELECT mot_de_passe FROM users WHERE id = ?').get(id).mot_de_passe))) {
+      auth.enregistrerEchec(auth.ip(req));
+      return envoyerErreur(res, 401, 'Mot de passe actuel incorrect.');
+    }
+    const mdp = String(nouveau || '');
+    if (mdp.length < 10) return envoyerErreur(res, 400, 'Le nouveau mot de passe doit contenir au moins 10 caractères.');
+    if (!/[a-zA-Z]/.test(mdp) || !/[0-9]/.test(mdp)) {
+      return envoyerErreur(res, 400, 'Le nouveau mot de passe doit contenir au moins une lettre et un chiffre.');
+    }
+    if (mdp === String(actuel || '')) return envoyerErreur(res, 400, "Le nouveau mot de passe doit être différent de l'ancien.");
+    if (String(actuel || '') === process.env.ADMIN_PASSWORD) {
+      console.log("  Rappel : ADMIN_PASSWORD est toujours defini dans les secrets. Executez : flyctl secrets unset ADMIN_PASSWORD");
+    }
+
+    await db.modifierUtilisateur(id, { mot_de_passe: mdp });
+    return envoyerJson(res, 200, { modifie: true },
+      { 'Set-Cookie': auth.cookieVide(req) });
   }
 
   /* ---- Utilisateurs (admin) ---- */
@@ -340,6 +410,7 @@ serveur.requestTimeout = 30000;
 
 (async () => {
   await verifierPremierLancement();
+  avertirSiVolumePerdu();
   const nettoyes = db.nettoyerSessionsExpirees();
   if (nettoyes) console.log(`  ${nettoyes} session(s) expiree(s) supprimee(s).`);
   setInterval(() => db.nettoyerSessionsExpirees(), 3600_000).unref();
@@ -351,6 +422,9 @@ serveur.requestTimeout = 30000;
     console.log(`  Serveur : http://${HOST}:${PORT}`);
     console.log(`  Base    : ${db.DB_PATH}`);
     console.log(`  Mode    : ${PRODUCTION ? 'production' : 'developpement'}`);
+    if (PRODUCTION) {
+      console.log(`  HTTPS   : cookie Secure ${auth.estHttps({ headers: {}, socket: {} }) ? 'actif' : 'actif uniquement sur les requetes HTTPS'}`);
+    }
     console.log('');
   });
 })();

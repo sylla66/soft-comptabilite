@@ -140,7 +140,10 @@ $('#btn-deconnexion').addEventListener('click', () => deconnecter());
 /* ================================================================== */
 
 async function demarrerApplication() {
+  if (utilisateur.doit_changer_mdp) return afficherChangementMdp();
+
   $('#ecran-connexion').classList.add('cache');
+  $('#ecran-mdp').classList.add('cache');
   $('#application').classList.remove('cache');
 
   $('#qui-est-ce').textContent = `${utilisateur.nom} — ${estAdmin() ? 'administrateur' : 'saisie'}`;
@@ -151,6 +154,61 @@ async function demarrerApplication() {
   await reinitialiserFormulaire();
   await rafraichirVue();
 }
+
+/* ================================================================== */
+/* Changement de mot de passe obligatoire                              */
+/* ================================================================== */
+
+function afficherChangementMdp() {
+  $('#ecran-connexion').classList.add('cache');
+  $('#ecran-mdp').classList.remove('cache');
+  $('#application').classList.add('cache');
+  $('#mdp-erreur').textContent = '';
+  setTimeout(() => $('#mdp-actuel').focus(), 50);
+}
+
+$('#form-mdp').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const neuf = $('#mdp-neuf').value;
+  const erreur = $('#mdp-erreur');
+  erreur.textContent = '';
+
+  if (neuf.length < 10) return (erreur.textContent = 'Le mot de passe doit contenir au moins 10 caractères.');
+  if (!/[a-zA-Z]/.test(neuf) || !/[0-9]/.test(neuf)) {
+    return (erreur.textContent = 'Le mot de passe doit contenir au moins une lettre et un chiffre.');
+  }
+  if (neuf !== $('#mdp-confirm').value) return (erreur.textContent = 'Les deux mots de passe ne correspondent pas.');
+  if (neuf === $('#mdp-actuel').value) return (erreur.textContent = "Le nouveau mot de passe doit être différent de l'ancien.");
+
+  const bouton = $('#btn-mdp');
+  bouton.disabled = true;
+  try {
+    await api('/api/utilisateurs/' + utilisateur.id + '/mot-de-passe', {
+      method: 'PUT',
+      body: JSON.stringify({ actuel: $('#mdp-actuel').value, nouveau: neuf }),
+    });
+    $('#form-mdp').reset();
+    const reCo = await api('/api/connexion', { method: 'POST', body: JSON.stringify({ nom: utilisateur.nom, mot_de_passe: neuf }) });
+    utilisateur = reCo.utilisateur;
+    csrf = reCo.csrf;
+    await demarrerApplication();
+    toast('Mot de passe enregistré. Tout est sécurisé.');
+  } catch (err) {
+    erreur.textContent = err.message;
+  } finally {
+    bouton.disabled = false;
+  }
+});
+
+/* Mot de passe : la touche Entree ne doit pas envoyer si les champs ne concordent pas */
+$('#mdp-neuf').addEventListener('input', () => {
+  const n = $('#mdp-neuf').value;
+  const ok = n.length >= 10 && /[a-zA-Z]/.test(n) && /[0-9]/.test(n);
+  $('#force').textContent = ok
+    ? '✓ Mot de passe assez solide.'
+    : `Encore ${Math.max(0, 10 - n.length)} caractère(s), avec au moins une lettre et un chiffre.`;
+  $('#force').style.color = ok ? 'var(--vert)' : 'var(--gris)';
+});
 
 function afficherVue(nom) {
   vueCourante = nom;

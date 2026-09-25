@@ -17,9 +17,14 @@ primary_region = "cdg"
 [http_service]
   internal_port = 3000
   force_https = true
+  # L'application se met en veille quand personne ne l'utilise, pour rester
+  # dans l'offre gratuite. Le premier chargement après une veille peut donc
+  # prendre 1 a 3 secondes.
   auto_stop_machines = "suspend"
   auto_start_machines = true
-  min_machines_running = 1
+  # 0 = la machine s'eteint vraiment. Mettez 1 si vous preferez une reponse
+  # instantanee, au prix d'une machine allumee en permanence.
+  min_machines_running = 0
 
 [[http_service.checks]]
   interval = "30s"

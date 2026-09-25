@@ -31,6 +31,39 @@
   </form>
 </div>
 
+<!-- ================= CHANGEMENT OBLIGATOIRE ================= -->
+<div id="ecran-mdp" class="ecran-connexion cache">
+  <form class="boite-connexion" id="form-mdp" autocomplete="off">
+    <div class="logo-grand">🔐</div>
+    <h1>Choisissez votre mot de passe</h1>
+    <p class="sous-titre">Obligatoire avant d'utiliser l'application</p>
+
+    <div class="alerte-alerte">
+      Le mot de passe utilisé pour créer ce compte a été défini par
+      <b>ADMIN_PASSWORD</b> sur le serveur. Il est connu et il reste stocké
+      dans les secrets de l'hébergeur. Changez-le maintenant.
+    </div>
+
+    <label class="champ">
+      <span>Mot de passe actuel</span>
+      <input type="password" id="mdp-actuel" autocomplete="current-password" required>
+    </label>
+    <label class="champ">
+      <span>Nouveau mot de passe</span>
+      <input type="password" id="mdp-neuf" minlength="10" autocomplete="new-password" required>
+      <small class="aide" id="force">10 caractères minimum, avec une lettre et un chiffre.</small>
+    </label>
+    <label class="champ">
+      <span>Confirmer le nouveau mot de passe</span>
+      <input type="password" id="mdp-confirm" minlength="10" autocomplete="new-password" required>
+    </label>
+
+    <p class="message-erreur" id="mdp-erreur"></p>
+    <button type="submit" class="btn-principal large" id="btn-mdp">Valider et continuer</button>
+    <p class="note-securite">Vous serez déconnecté de toutes vos sessions.</p>
+  </form>
+</div>
+
 <!-- ================= APPLICATION ================= -->
 <div id="application" class="cache">
 

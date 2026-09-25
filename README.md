@@ -48,7 +48,7 @@ L'application la sort donc du résultat et affiche à part :
 |--------|-----------|
 | **Entrées** | Vente détail, Vente gros |
 | **Sorties** | Achat poisson, Glace / conservation, Transport, Emballage, Location étal, Salaires |
-| **Investissement** | Investissement (à personnaliser : âches, balances, matériel…) |
+| **Investissement** | Investissement (à personnaliser : bâches, balances, matériel…) |
 
 Créez vos propres catégories dans l'onglet **Catégories** — choisissez bien la nature.
 
@@ -80,9 +80,10 @@ Un administrateur crée les comptes depuis l'onglet **Utilisateurs**.
 
 | Mesure | Détail |
 |--------|--------|
-| Mots de passe | Hachés avec **scrypt** (sel aléatoire, 16 Ko de mémoire), jamais en clair — même pas dans la base |
+| Mots de passe | Hachés avec **scrypt** (sel aléatoire, 16 Mio de mémoire), jamais en clair — même pas dans la base |
 | Sessions | Jeton aléatoire de 32 octets ; **seul son empreinte SHA-256** est stockée en base |
-| Cookies | `HttpOnly` + `SameSite=Strict` + `Secure` (en production) + expiration 7 jours |
+| Cookies | `HttpOnly` + `SameSite=Strict` + `Secure` (uniquement quand la requête arrive en HTTPS, donc automatiquement sur l'URL Fly.io) + expiration 7 jours |
+| Premier accès | Le compte d'amorçage est forcé de changer son mot de passe avant d'accéder au journal |
 | CSRF | Jeton par session exigé sur **toutes** les écritures, comparé en temps constant |
 | Anti-force | 8 échecs par IP sur 15 minutes, puis blocage (code 429) |
 | En-têtes | CSP, `X-Frame-Options: DENY`, `nosniff`, `no-referrer`, HSTS, `Permissions-Policy` |
@@ -122,21 +123,23 @@ persistant inclus dans l'offre gratuite) ou un VPS gratuit type Oracle Cloud.
 # 1. Installer l'outil
 npm i -g flyctl
 
-# 2. Se connecter
+# 2. Se connecter (ouvre le navigateur)
 fly auth login
 
-# 3. Créer le volume persistant (UNE SEULE FOIS — il contient vos données)
+# 3. Créer l'application (indispensable AVANT le volume)
+fly launch --no-deploy --copy-config --name comptabilite-poisson
+
+# 4. Créer le volume persistant (UNE SEULE FOIS — il contient vos données)
 fly volumes create compta_data --size 1 --region cdg
 
-# 4. Définir le mot de passe administrateur (secret chiffré, hors dépôt)
-fly secrets set ADMIN_PASSWORD='UnMotDePasseTresSolideEtUnique2026'
+# 5. Définir un mot de passe administrateur provisoire (secret chiffré, hors dépôt)
 fly secrets set ADMIN_USER='patron'
+fly secrets set ADMIN_PASSWORD='UnMotDePasseLongEtUniqueAChange2026'
 
-# 5. Déployer
-fly launch --no-deploy --copy-config --name comptabilite-poisson
+# 6. Déployer
 fly deploy
 
-# 6. Ouvrir l'application
+# 7. Ouvrir l'application
 fly open
 ```
 
@@ -144,6 +147,25 @@ L'URL obtenue est en HTTPS, donc le cookie `Secure` s'active automatiquement.
 
 > ⚠️ Ne mettez **jamais** `ADMIN_PASSWORD` dans `fly.toml` ou un fichier versionné.
 > Utilisez toujours `fly secrets set`.
+
+#### Première connexion : changez le mot de passe
+
+Le mot de passe de l'étape 5 n'est qu'un **secret d'amorçage**. À la première
+connexion, l'application affiche un écran bloquant qui oblige à choisir un mot de
+passe personnel (10 caractères minimum, avec une lettre et un chiffre). Tant que
+ce n'est pas fait, l'interface refuse d'ouvrir le journal.
+
+Toutes les sessions ouvertes sont alors invalidées, et il faut se reconnecter.
+
+Dès que le nouveau mot de passe est enregistré, **supprimez le secret** : il ne sert
+plus à rien et il resterait lisible par quiconque a accès à votre compte Fly.io.
+
+```bash
+fly secrets unset ADMIN_PASSWORD
+```
+
+> Notez bien votre nouveau mot de passe : il n'est stocké que sous forme de hash.
+> Ni l'application ni l'hébergeur ne peuvent vous le rappeler.
 
 ---
 
