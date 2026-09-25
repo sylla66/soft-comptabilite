@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Comptabilité — Vente de poisson</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐟</text></svg>">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ================= CONNEXION ================= -->
+<div id="ecran-connexion" class="ecran-connexion cache">
+  <form class="boite-connexion" id="form-connexion" autocomplete="off">
+    <div class="logo-grand">🐟</div>
+    <h1>Comptabilité</h1>
+    <p class="sous-titre">Vente de poisson</p>
+
+    <label class="champ">
+      <span>Identifiant</span>
+      <input type="text" id="connexion-nom" autocomplete="username" required autofocus>
+    </label>
+    <label class="champ">
+      <span>Mot de passe</span>
+      <input type="password" id="connexion-mdp" autocomplete="current-password" required>
+    </label>
+
+    <p class="message-erreur" id="connexion-erreur"></p>
+    <button type="submit" class="btn-principal large" id="btn-connexion">Se connecter</button>
+    <p class="note-securite">Connexion chiffrée. Les tentatives sont limitées.</p>
+  </form>
+</div>
+
+<!-- ================= APPLICATION ================= -->
+<div id="application" class="cache">
+
+<header class="topbar">
+  <div class="marque">
+    <span class="logo">🐟</span>
+    <div>
+      <h1>Comptabilité</h1>
+      <p>Vente de poisson — entrées, sorties &amp; investissements</p>
+    </div>
+  </div>
+  <div class="haut-droite">
+    <nav class="onglets">
+      <button class="onglet actif" data-vue="journal">Journal</button>
+      <button class="onglet" data-vue="bilan">Tableau de bord</button>
+      <button class="onglet" data-vue="categories">Catégories</button>
+      <button class="onglet cache" data-vue="utilisateurs" id="onglet-utilisateurs">Utilisateurs</button>
+    </nav>
+    <div class="menu-utilisateur">
+      <span class="qui" id="qui-est-ce">—</span>
+      <button class="btn-fantome" id="btn-deconnexion">Déconnexion</button>
+    </div>
+  </div>
+</header>
+
+<main>
+
+  <!-- ============ JOURNAL ============ -->
+  <section id="vue-journal" class="vue">
+
+    <div class="filtres">
+      <label>Période
+        <div class="plage">
+          <input type="date" id="f-debut">
+          <span>→</span>
+          <input type="date" id="f-fin">
+        </div>
+      </label>
+      <label>Nature
+        <select id="f-type">
+          <option value="">Toutes</option>
+          <option value="entree">Entrées (recettes)</option>
+          <option value="sortie">Sorties (dépenses)</option>
+          <option value="investissement">Investissements (biens durables)</option>
+        </select>
+      </label>
+      <label>Catégorie
+        <select id="f-categorie"><option value="">Toutes</option></select>
+      </label>
+      <label>Rechercher
+        <input type="search" id="f-texte" placeholder="note, catégorie…">
+      </label>
+      <div class="actions-filtres">
+        <button id="btn-mois" class="btn-fantome">Ce mois</button>
+        <button id="btn-tout" class="btn-fantome">Tout</button>
+        <button id="btn-export" class="btn-fantome">Exporter CSV</button>
+      </div>
+    </div>
+
+    <div class="resume" id="resume-filtre"></div>
+
+    <div class="grille">
+      <aside class="carte saisie">
+        <h2 id="titre-saisie">Nouvelle opération</h2>
+        <form id="form-op" autocomplete="off">
+          <input type="hidden" id="op-id">
+
+          <div class="champ">
+            <label>Nature de l'opération</label>
+            <div class="bascule trois">
+              <label class="opt"><input type="radio" name="type-op" value="entree" checked><span>Entrée</span></label>
+              <label class="opt"><input type="radio" name="type-op" value="sortie"><span>Sortie</span></label>
+              <label class="opt"><input type="radio" name="type-op" value="investissement"><span>Invest.</span></label>
+            </div>
+            <small class="aide" id="aide-nature">Argent reçu (recette).</small>
+          </div>
+
+          <div class="champ">
+            <label for="op-date">Date</label>
+            <input type="date" id="op-date" required>
+          </div>
+
+          <div class="champ">
+            <label for="op-categorie">Catégorie</label>
+            <select id="op-categorie" required></select>
+          </div>
+
+          <div class="champ">
+            <label>Mode de saisie</label>
+            <div class="bascule">
+              <label class="opt"><input type="radio" name="mode" value="detail" checked><span>Quantité × prix</span></label>
+              <label class="opt"><input type="radio" name="mode" value="montant"><span>Montant direct</span></label>
+            </div>
+          </div>
+
+          <div id="bloc-detail">
+            <div class="duo">
+              <div class="champ">
+                <label for="op-quantite">Quantité</label>
+                <input type="number" id="op-quantite" step="0.01" min="0" placeholder="0">
+              </div>
+              <div class="champ">
+                <label for="op-unite">Unité</label>
+                <select id="op-unite">
+                  <option value="kg">kg</option>
+                  <option value="g">g</option>
+                  <option value="piece">pièce</option>
+                  <option value="carton">carton</option>
+                  <option value="sachet">sachet</option>
+                  <option value="barquette">barquette</option>
+                  <option value="forfait">forfait</option>
+                  <option value="bache">bâche</option>
+                  <option value="balance">balance</option>
+                </select>
+              </div>
+            </div>
+            <div class="champ">
+              <label for="op-prix">Prix unitaire</label>
+              <input type="number" id="op-prix" step="0.01" min="0" placeholder="0.00">
+            </div>
+          </div>
+
+          <div id="bloc-montant" class="cache">
+            <div class="champ">
+              <label for="op-montant">Montant total</label>
+              <input type="number" id="op-montant" step="0.01" min="0" placeholder="0.00">
+            </div>
+          </div>
+
+          <div class="total-affiche">
+            <span>Total</span>
+            <strong id="op-total">0,00</strong>
+          </div>
+
+          <div class="champ">
+            <label for="op-note">Note / détail</label>
+            <input type="text" id="op-note" placeholder="ex: bâche 3×4 m, balance 50 kg">
+          </div>
+
+          <div class="boutons">
+            <button type="submit" class="btn-principal" id="btn-valider">Enregistrer</button>
+            <button type="button" class="btn-fantome" id="btn-annuler">Annuler</button>
+          </div>
+        </form>
+      </aside>
+
+      <div class="carte liste">
+        <div class="entete-liste">
+          <h2>Opérations <span class="badge" id="nb-op">0</span></h2>
+          <div class="mini-resume" id="resume-liste"></div>
+        </div>
+        <div class="tableau-defilant">
+          <table id="table-op">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Nature</th>
+                <th>Catégorie</th>
+                <th>Détail</th>
+                <th class="num">Montant</th>
+                <th class="actions">Actions</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+          <p class="vide" id="liste-vide">Aucune opération pour cette période.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ TABLEAU DE BORD ============ -->
+  <section id="vue-bilan" class="vue cache">
+    <div class="cartes-kpi">
+      <div class="kpi entree">
+        <span class="kpi-label">Entrées</span>
+        <strong id="k-entrees">0,00</strong>
+        <small id="k-entrees-n">0 opération(s)</small>
+      </div>
+      <div class="kpi sortie">
+        <span class="kpi-label">Sorties</span>
+        <strong id="k-sorties">0,00</strong>
+        <small id="k-sorties-n">0 opération(s)</small>
+      </div>
+      <div class="kpi investissement">
+        <span class="kpi-label">Investissements</span>
+        <strong id="k-invest">0,00</strong>
+        <small id="k-invest-n">0 opération(s)</small>
+      </div>
+      <div class="kpi resultat">
+        <span class="kpi-label">Résultat d'exploitation</span>
+        <strong id="k-resultat">0,00</strong>
+        <small id="k-marge">Marge : —</small>
+      </div>
+    </div>
+
+    <div class="grille-bilan">
+      <div class="carte">
+        <h2>Par catégorie</h2>
+        <div id="barres-categories"></div>
+      </div>
+      <div class="carte">
+        <h2>Par mois</h2>
+        <div class="tableau-defilant court">
+          <table>
+            <thead>
+              <tr>
+                <th>Mois</th><th class="num">Entrées</th><th class="num">Sorties</th>
+                <th class="num">Invest.</th><th class="num">Résultat</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-mois"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="carte note-comptable">
+      <h2>À retenir</h2>
+      <div class="encadre" id="encadre-bilan"></div>
+    </div>
+  </section>
+
+  <!-- ============ CATEGORIES ============ -->
+  <section id="vue-categories" class="vue cache">
+    <div class="grille">
+      <aside class="carte saisie" id="bloc-form-cat">
+        <h2 id="titre-cat">Nouvelle catégorie</h2>
+        <form id="form-cat" autocomplete="off">
+          <input type="hidden" id="cat-id">
+          <div class="champ">
+            <label>Nature</label>
+            <div class="bascule trois">
+              <label class="opt"><input type="radio" name="type-cat" value="entree" checked><span>Entrée</span></label>
+              <label class="opt"><input type="radio" name="type-cat" value="sortie"><span>Sortie</span></label>
+              <label class="opt"><input type="radio" name="type-cat" value="investissement"><span>Invest.</span></label>
+            </div>
+          </div>
+          <div class="champ">
+            <label for="cat-nom">Nom</label>
+            <input type="text" id="cat-nom" required placeholder="ex: Bâche et tente">
+          </div>
+          <div class="champ">
+            <label for="cat-unite">Unité par défaut</label>
+            <select id="cat-unite">
+              <option value="">— aucune —</option>
+              <option value="kg">kg</option>
+              <option value="g">g</option>
+              <option value="piece">pièce</option>
+              <option value="carton">carton</option>
+              <option value="sachet">sachet</option>
+              <option value="barquette">barquette</option>
+              <option value="forfait">forfait</option>
+              <option value="bache">bâche</option>
+              <option value="balance">balance</option>
+            </select>
+          </div>
+          <div class="boutons">
+            <button type="submit" class="btn-principal">Enregistrer</button>
+            <button type="button" class="btn-fantome" id="btn-cat-annuler">Annuler</button>
+          </div>
+        </form>
+      </aside>
+
+      <div class="carte liste">
+        <h2>Catégories</h2>
+        <p class="aide">Un <b>investissement</b> (bâche, balance, véhicule…) n'est pas une dépense : il augmente la valeur du stock de biens et n'entre pas dans le résultat d'exploitation.</p>
+        <div class="tableau-defilant">
+          <table>
+            <thead><tr><th>Nom</th><th>Nature</th><th>Unité</th><th class="num">Opérations</th><th class="actions">Actions</th></tr></thead>
+            <tbody id="tbody-cats"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ UTILISATEURS ============ -->
+  <section id="vue-utilisateurs" class="vue cache">
+    <div class="grille">
+      <aside class="carte saisie">
+        <h2 id="titre-user">Nouvel utilisateur</h2>
+        <form id="form-user" autocomplete="off">
+          <input type="hidden" id="user-id">
+          <div class="champ">
+            <label for="user-nom">Identifiant</label>
+            <input type="text" id="user-nom" required placeholder="ex: karim">
+          </div>
+          <div class="champ">
+            <label for="user-mdp">Mot de passe</label>
+            <input type="password" id="user-mdp" minlength="8" placeholder="8 caractères minimum">
+            <small class="aide">Laissez vide pour ne pas le modifier.</small>
+          </div>
+          <div class="champ">
+            <label for="user-role">Rôle</label>
+            <select id="user-role">
+              <option value="saisie">Saisie — peut ajouter et modifier des opérations</option>
+              <option value="admin">Administrateur — accès complet</option>
+            </select>
+          </div>
+          <div class="champ cache" id="bloc-user-actif">
+            <label class="interrupteur">
+              <input type="checkbox" id="user-actif" checked>
+              <span>Compte actif</span>
+            </label>
+          </div>
+          <div class="boutons">
+            <button type="submit" class="btn-principal">Enregistrer</button>
+            <button type="button" class="btn-fantome" id="btn-user-annuler">Annuler</button>
+          </div>
+        </form>
+      </aside>
+
+      <div class="carte liste">
+        <h2>Utilisateurs</h2>
+        <p class="aide">Le mot de passe est stocké haché (scrypt) : il n'est jamais lisible, même par l'administrateur.</p>
+        <div class="tableau-defilant">
+          <table>
+            <thead><tr><th>Identifiant</th><th>Rôle</th><th>État</th><th>Créé le</th><th class="actions">Actions</th></tr></thead>
+            <tbody id="tbody-users"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+</div>
+
+<div id="toast" class="toast"></div>
+<div id="attente" class="attente cache"><div class="roue"></div></div>
+
+<script src="app.js"></script>
+</body>
+</html>

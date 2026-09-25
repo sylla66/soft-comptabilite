@@ -1,0 +1,36 @@
+# ==========================================
+#  NE JAMAIS PUBLIER CES DONNEES
+# ==========================================
+
+# Base de donnees : contient vos chiffre d'affaires, salaries, fournisseurs
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+backup/
+backups/
+sauvegarde*.csv
+export*.csv
+
+# Secrets : mots de passe, identifiants
+.env
+.env.local
+.env.*.local
+secrets*.json
+
+# Dependances et build
+node_modules/
+npm-debug.log*
+.npm/
+
+# Systeme et editors
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
+.vscode/
+.idea/
+*.swp
+*~

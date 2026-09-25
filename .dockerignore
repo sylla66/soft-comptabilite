@@ -1,0 +1,14 @@
+.dockerignore
+.git
+.gitignore
+data/
+*.db
+*.db-wal
+*.db-shm
+node_modules
+.env
+.env.*
+*.md
+*.csv
+fly.toml
+Procfile
