@@ -89,30 +89,46 @@ function estLocal(hote) {
 }
 
 /**
+ * Nettoie la chaine de connexion avant de la donner a `pg`.
+ *
+ * Neon publie plusieurs formes de la meme chaine, et certains tableaux de
+ * bord ajoutent `channel_binding=require`. C'est une option de `libpq`, pas
+ * un parametre de PostgreSQL : transmise au serveur, elle le fait echouer
+ * au demarrage ("unrecognized configuration parameter"). On la retire donc
+ * - le chiffrement reste assure par `sslmode`.
+ */
+function nettoyerUrl(u) {
+  return String(u)
+    .replace(/([?&])channel_binding=[^&#]*&?/i, '$1')
+    .replace(/[?&]{2,}/g, (m) => m[0])
+    .replace(/[?&]$/, '');
+}
+
+/**
  * Options de connexion.
  *
- * Si la chaine contient un `sslmode`, on ne touche a rien : c'est PostgreSQL
- * qui l'applique, et une chaine Neon contient `sslmode=require` (obligatoire,
- * Neon refuse le trafic en clair). Forcer le TLS nous-meme rendrait impossible
- * de se connecter a un PostgreSQL local configure sans SSL.
- *
- * Sans `sslmode`, on ne force rien - on se contente de signaler le cas d'une
- * base distante en clair, plutot que d'echouer au demarrage.
+ * Pour une base hebergee, le TLS est obligatoire : Neon refuse le trafic en
+ * clair, et une chaine copiee depuis le tableau de bord peut l'avoir perdu.
+ * On ajoute donc `sslmode=require` quand il manque, plutot que de laisser
+ * partir des identifiants en clair. Un PostgreSQL local (localhost, docker)
+ * est laisse intact : le forcer casserait une base configuree sans SSL.
  */
 function optionsConnexion(u) {
+  let chaine = nettoyerUrl(u);
   const options = {
-    connectionString: u,
+    connectionString: chaine,
     max: Number(process.env.PGPOOL_MAX || 5),
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 20_000,
   };
-  if (/[?&]sslmode=/i.test(u)) return options;
+  if (/[?&]sslmode=/i.test(chaine)) return options;
 
   let hote = '';
-  try { hote = new URL(u).hostname; } catch { /* URL illisible : rien a dire */ }
+  try { hote = new URL(chaine).hostname; } catch { /* URL illisible : rien a dire */ }
   if (hote && !estLocal(hote)) {
-    console.warn(`  ATTENTION : DATABASE_URL ne contient pas de sslmode ; la connexion vers ${hote} ne sera pas chiffree.`);
-    console.warn("  Ajoutez ?sslmode=require a la chaine (c'est ce que fournit Neon).");
+    console.warn(`  DATABASE_URL ne precise pas de sslmode : ajout de sslmode=require pour ${hote}.`);
+    chaine += (chaine.includes('?') ? '&' : '?') + 'sslmode=require';
+    options.connectionString = chaine;
   }
   return options;
 }
