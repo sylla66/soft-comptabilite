@@ -10,5 +10,6 @@ node_modules
 .env.*
 *.md
 *.csv
-fly.toml
+render.yaml
 Procfile
+tests/

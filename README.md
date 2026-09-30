@@ -1,22 +1,45 @@
 # 🐟 Comptabilité — Vente de poisson
 
 Gestion des **entrées**, **sorties** et **investissements** d'un commerce de vente de poisson.
-Aucune dépendance à installer, aucun compte cloud, aucune clé d'API.
+Hébergée sur **Render**, base de données sur **Neon PostgreSQL**.
 
 ---
 
 ## Démarrage local
 
+Il faut un PostgreSQL. Le plus rapide est un conteneur Docker :
+
 ```bash
-node server.js
+docker run -d --name compta-pg -p 5433:5432 ^
+  -e POSTGRES_USER=compta -e POSTGRES_PASSWORD=secret_test -e POSTGRES_DB=compta_test ^
+  postgres:16-alpine
 ```
 
-Puis ouvrez **http://127.0.0.1:3000**.
+Puis, dans le dossier du projet :
 
-Au **premier lancement**, un compte administrateur est créé et son mot de passe s'affiche
-dans la fenêtre du serveur. Notez-le, puis changez-le depuis l'onglet **Utilisateurs**.
+```bash
+npm install
+set DATABASE_URL=postgresql://compta:secret_test@127.0.0.1:5433/compta_test
+npm start
+```
+
+Ouvrez **http://127.0.0.1:3000**. Le schéma et les catégories par défaut sont créés
+automatiquement au démarrage.
 
 Pour arrêter : `Ctrl + C`
+
+### Créer des comptes de test
+
+```bash
+set SEED_ADMIN_NOM=admin
+set SEED_ADMIN_MDP=VotreMotDePasse1
+set SEED_SAISIE_NOM=saisie
+set SEED_SAISIE_MDP=AutreMotDePasse2
+npm run seed
+```
+
+Les identifiants sont affichés une seule fois. Un compte déjà présent n'est jamais
+écrasé : relancer le script est sans risque.
 
 ---
 
@@ -39,7 +62,7 @@ L'application la sort donc du résultat et affiche à part :
 - **Valeur des biens durables** = total de vos investissements *(ce que vous avez investi)*
 
 > ⚠️ Un investissement n'est pas non plus « gratuit » : il se déprécie. Cette application ne
-> calcule pas l'amortissement. Si vous avez besoin d'amortissements lineaires pour la
+> calcule pas l'amortissement. Si vous avez besoin d'amortissements linéaires pour la
 > déclaration fiscale, c'est une fonctionnalité à ajouter.
 
 ### Catégories incluses
@@ -82,108 +105,96 @@ Un administrateur crée les comptes depuis l'onglet **Utilisateurs**.
 |--------|--------|
 | Mots de passe | Hachés avec **scrypt** (sel aléatoire, 16 Mio de mémoire), jamais en clair — même pas dans la base |
 | Sessions | Jeton aléatoire de 32 octets ; **seul son empreinte SHA-256** est stockée en base |
-| Cookies | `HttpOnly` + `SameSite=Strict` + `Secure` (uniquement quand la requête arrive en HTTPS, donc automatiquement sur l'URL Fly.io) + expiration 7 jours |
+| Cookies | `HttpOnly` + `SameSite=Strict` + `Secure` (automatiquement sur l'URL HTTPS de Render) + expiration 7 jours |
 | Premier accès | Le compte d'amorçage est forcé de changer son mot de passe avant d'accéder au journal |
 | CSRF | Jeton par session exigé sur **toutes** les écritures, comparé en temps constant |
 | Anti-force | 8 échecs par IP sur 15 minutes, puis blocage (code 429) |
 | En-têtes | CSP, `X-Frame-Options: DENY`, `nosniff`, `no-referrer`, HSTS, `Permissions-Policy` |
 | API | Toutes les routes exigent une session ; les routes d'écriture exigent le rôle `admin` |
-| Fuite d'information | Message d'erreur identique que le compte existe ou non |
+| Fuite d'information | Message d'erreur identique que le compte existe ou non, et temps de hachage constant |
 | Injection | Tout passe par des requêtes SQL préparées (paramétrées) |
-| Exécution | Conteneur non-root, `node:22-alpine` |
+| Exécution | Conteneur non-root, `node:24-alpine` |
 
 ---
 
-## 📤 Déploiement
+## 📤 Déploiement sur Render + Neon
 
-### 1. Sur GitHub (le code seul)
+### 1. La base sur Neon
 
-```bash
-cd soft-comptabilite
-git init
-git add .
-git commit -m "Comptabilite vente de poisson"
-git branch -M main
-git remote add origin https://github.com/VOTRE-PSEUDO/soft-comptabilite.git
-git push -u origin main
-```
+1. Créez un compte sur [neon.tech](https://neon.tech) et un projet PostgreSQL.
+2. Dans **Connection Details**, copiez la chaîne de connexion **pooled**
+   (elle contient `?sslmode=require`). C'est celle qu'il faut : elle passe par un
+   proxy prévu pour les applications serverless, alors que la chaîne *directe*
+   est faite pour un poste ou un serveur traditionnel.
 
-Le `.gitignore` est déjà en place : **la base et les secrets ne peuvent pas être publiés.**
-Vérifiez toujours avec `git status` avant de pousser.
+Le schéma et les catégories sont créés automatiquement au premier démarrage de
+l'application : il n'y a rien à importer.
 
-### 2. Sur un hébergeur gratuit à disque persistant
+### 2. Le service sur Render
 
-Render, Railway et Heroku **effacent le disque à chaque redéploiement** : n'utilisez pas la
-base SQLite locale chez eux, vos données seraient perdues. Utilisez **Fly.io** (volume
-persistant inclus dans l'offre gratuite) ou un VPS gratuit type Oracle Cloud.
+Le dépôt contient un `render.yaml` : Render peut créer le service tout seul.
 
-#### Fly.io (recommandé)
+1. Poussez le code sur GitHub.
+2. Dans Render : **New → Blueprint**, choisissez le dépôt. Render lit `render.yaml`.
+3. Render vous demandera **`DATABASE_URL`** : collez-y la chaîne Neon de l'étape 1.
+4. Render génère un `ADMIN_PASSWORD` (`generateValue: true`). **Notez-le**, il ne
+   sera plus affiché ensuite.
+5. Déployez. Au premier démarrage, le compte administrateur est créé avec ce mot
+   de passe, et l'application affiche son adresse.
 
-```bash
-# 1. Installer l'outil
-npm i -g flyctl
+### 3. Première connexion : changez le mot de passe
 
-# 2. Se connecter (ouvre le navigateur)
-fly auth login
-
-# 3. Créer l'application (indispensable AVANT le volume)
-fly launch --no-deploy --copy-config --name soft-comptabilite
-
-# 4. Créer le volume persistant (UNE SEULE FOIS — il contient vos données)
-fly volumes create compta_data --size 1 --region cdg
-
-# 5. Définir un mot de passe administrateur provisoire (secret chiffré, hors dépôt)
-fly secrets set ADMIN_USER='patron'
-fly secrets set ADMIN_PASSWORD='UnMotDePasseLongEtUniqueAChange2026'
-
-# 6. Déployer
-fly deploy
-
-# 7. Ouvrir l'application
-fly open
-```
-
-L'URL obtenue est en HTTPS, donc le cookie `Secure` s'active automatiquement.
-
-> ⚠️ Ne mettez **jamais** `ADMIN_PASSWORD` dans `fly.toml` ou un fichier versionné.
-> Utilisez toujours `fly secrets set`.
-
-#### Première connexion : changez le mot de passe
-
-Le mot de passe de l'étape 5 n'est qu'un **secret d'amorçage**. À la première
+Le mot de passe généré par Render n'est qu'un **secret d'amorçage**. À la première
 connexion, l'application affiche un écran bloquant qui oblige à choisir un mot de
 passe personnel (10 caractères minimum, avec une lettre et un chiffre). Tant que
 ce n'est pas fait, l'interface refuse d'ouvrir le journal.
 
 Toutes les sessions ouvertes sont alors invalidées, et il faut se reconnecter.
 
-Dès que le nouveau mot de passe est enregistré, **supprimez le secret** : il ne sert
-plus à rien et il resterait lisible par quiconque a accès à votre compte Fly.io.
-
-```bash
-fly secrets unset ADMIN_PASSWORD
-```
+Dès que le nouveau mot de passe est enregistré, **retirez `ADMIN_PASSWORD`** :
+Render → *Environment* → *Remove ADMIN_PASSWORD*. Le compte s'authentifie
+désormais par sa base ; le secret ne sert plus à rien et resterait lisible par
+quiconque a accès à votre compte Render.
 
 > Notez bien votre nouveau mot de passe : il n'est stocké que sous forme de hash.
-> Ni l'application ni l'hébergeur ne peuvent vous le rappeler.
+> Ni l'application ni Neon ne peuvent vous le rappeler.
+
+### Option : créer des comptes de test
+
+Sur le poste où vous travaillez, avec la même `DATABASE_URL` que celle de Render :
+
+```bash
+set DATABASE_URL=<la chaîne Neon>
+set SEED_ADMIN_NOM=admin
+set SEED_ADMIN_MDP=VotreMotDePasse1
+set SEED_SAISIE_NOM=saisie
+set SEED_SAISIE_MDP=AutreMotDePasse2
+npm run seed
+```
+
+### À savoir sur l'offre gratuite
+
+- Le service Render se met en veille après quelques minutes d'inactivité : la
+  première requête suivante peut prendre quelques secondes. La base, elle, reste
+  bien en place — c'est tout l'intérêt d'avoir externalisé le stockage.
+- L'offre gratuite de Neon a des limites d'usage (stockage et heures de calcul).
+  Pour un commerce, c'est largement suffisant.
 
 ---
 
 ## Sauvegarde
 
-Vos données tiennent dans un seul fichier. **Sauvegardez-le régulièrement** (clé USB,
-Google Drive, un autre disque) : un hébergeur gratuit peut disparaître du jour au lendemain,
-et c'est vous le seul à avoir une copie de vos chiffres.
+Vos données sont dans PostgreSQL, chez Neon. C'est plus robuste qu'un fichier
+local, mais **ça ne dispense pas de sauvegarder** : un compte peut être résilié
+par erreur, ou un `Reset` peut être cliqué par mégarde.
 
-```bash
-# Copie de sécurité à froid (serveur arrêté)
-copy data\compta.db votre-sauvegarde\compta-2026-09-25.db
-```
-
-Sur Fly.io : `fly ssh console -C "cat /data/compta.db" > compta-2026-09-25.db`
-
-**Restauration** : arrêtez l'application, remplacez `data/compta.db` par votre sauvegarde,
-relancez. Supprimez aussi les fichiers `compta.db-wal` et `compta.db-shm` s'ils existent.
+- **Neon** : *Branching* permet de dupliquer la base à un instant donné ; c'est
+  aussi le moyen de tester une migration. Sinon, l'onglet **Backup & Restore**
+  propose des restauration à chaud sur les offre payantes.
+- **Depuis l'application** : *Utilisateurs → Sauvegarde complète* (administrateur)
+  télécharge un JSON contenant les catégories et toutes les opérations. C'est la
+  sauvegarde à faire régulièrement, sur une clé USB ou Google Drive.
+- **Export** : *Journal → Exporter CSV* pour une lecture dans Excel.
 
 ---
 
@@ -191,13 +202,18 @@ relancez. Supprimez aussi les fichiers `compta.db-wal` et `compta.db-shm` s'ils 
 
 | Variable | Défaut | Rôle |
 |----------|--------|------|
+| `DATABASE_URL` | — | **obligatoire** — chaîne de connexion PostgreSQL (Neon) |
 | `NODE_ENV` | — | `production` active `Secure` + HSTS + écoute sur `0.0.0.0` |
-| `PORT` | `3000` | port d'écoute |
+| `PORT` | `3000` | port d'écoute (Render le fournit) |
 | `HOST` | `127.0.0.1` (dev) / `0.0.0.0` (prod) | interface réseau |
 | `ADMIN_USER` | `admin` | identifiant du premier compte (1er lancement, base vide) |
 | `ADMIN_PASSWORD` | — | si fourni, définit le 1er mot de passe ; sinon il est généré et affiché |
-| `DATA_DIR` | `./data` | dossier de la base |
-| `COMPA_DB` | `./data/compta.db` | chemin exact du fichier SQLite |
+| `PGPOOL_MAX` | `5` | connexions simultanées dans le pool |
+| `SEED_ADMIN_NOM` / `SEED_ADMIN_MDP` | — | compte de test créé par `npm run seed` |
+| `SEED_SAISIE_NOM` / `SEED_SAISIE_MDP` | — | compte de saisie créé par `npm run seed` |
+
+Le pool de 5 connexions est volontairement modeste : une base Neon gratuite
+limite le nombre de connexions simultanées, et l'application en a peu besoin.
 
 ---
 
@@ -232,12 +248,16 @@ Filtres acceptés : `debut`, `fin`, `type` (`entree`\|`sortie`\|`investissement`
 soft-comptabilite/
 ├── server.js          serveur HTTP, routage, en-têtes de sécurité
 ├── auth.js            sessions, cookies, CSRF, limitation des tentatives
-├── db.js              schéma SQLite, calculs, scrypt, export
+├── db.js              schéma PostgreSQL, requêtes, calculs, scrypt, export
+├── seed.js            création des comptes de test
 ├── public/            interface (connexion, journal, bilan, catégories, utilisateurs)
-├── data/              compta.db  ← VOS DONNÉES, jamais versionnées
+├── render.yaml        configuration Render
 ├── Dockerfile         image de production (utilisateur non-root)
-├── fly.toml           configuration Fly.io (volume persistant)
 ├── Procfile           pour Render / Railway
 ├── .env.example       modèle de variables d'environnement
-└── .gitignore         bloque data/ et .env
+└── .gitignore         bloque .env et node_modules
 ```
+
+`db.js` contient tout l'accès aux données : le reste de l'application ne fait
+jamais de SQL lui-même. Toutes les fonctions sont asynchrones, puisqu'une
+requête PostgreSQL demande un aller-retour réseau.

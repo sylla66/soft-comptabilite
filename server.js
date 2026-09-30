@@ -118,7 +118,7 @@ function servirStatique(res, cheminRelatif) {
 /* ------------------------------------------------------------------ */
 
 async function verifierPremierLancement() {
-  if (db.compterUtilisateurs() > 0) return;
+  if (await db.compterUtilisateurs() > 0) return;
 
   const mdp = process.env.ADMIN_PASSWORD;
   if (mdp) {
@@ -139,8 +139,8 @@ async function verifierPremierLancement() {
     console.log('');
     console.log('   Un changement de mot de passe vous sera demande a la');
     console.log('   premiere connexion. Faites-le immediatement.');
-    console.log('   Ensuite, SUPPRIMEZ le secret afin qu\'il ne soit plus exposé :');
-    console.log('       flyctl secrets unset ADMIN_PASSWORD');
+    console.log('   Ensuite, SUPPRIMEZ la variable afin qu\'elle ne soit plus');
+    console.log('   exposee : Render > Environment > Remove ADMIN_PASSWORD');
     console.log('  ============================================================\n');
   } else {
     const genere = crypto.randomBytes(12).toString('base64url');
@@ -157,17 +157,19 @@ async function verifierPremierLancement() {
 }
 
 /**
- * Si la base est vide alors qu'il y a des operations, le volume persistant
- * n'est pas la ou on l'attend. Sans cet avertissement, un nouvel admin serait
- * cree en silence avec un mot de passe deja connu.
+ * Sur une base hebergee, l'equivalent d'un volume perdu est une base qui a ete
+ * reinitialisee ou une chaine de connexion qui pointe ailleurs. Si des
+ * operations existent mais plus aucun utilisateur, on le dit : creer un admin
+ * dans ce cas vous feriez repartir d'une base vide sans vous en apercevoir.
  */
-function avertirSiVolumePerdu() {
-  const nbOps = Number(db.db.prepare('SELECT COUNT(*) AS n FROM operations').get().n);
-  if (nbOps === 0 || db.compterUtilisateurs() > 0) return;
+async function avertirSiBaseVide() {
+  const [nbOps, nbUsers] = await Promise.all([db.compterOperations(), db.compterUtilisateurs()]);
+  if (nbOps === 0 || nbUsers > 0) return;
   console.log('\n  ###########################################################');
-  console.log('   ATTENTION : aucun utilisateur trouve, mais ' + nbOps + ' operation(s)');
-  console.log('   existent. Le volume persistant n\'est probablement pas');
-  console.log('   monte sur /data. Verifiez "flyctl volumes list".');
+  console.log('   ATTENTION : aucun utilisateur, mais ' + nbOps + ' operation(s)');
+  console.log('   existent dans la base. DATABASE_URL pointe probablement');
+  console.log('   vers une autre base que celle d\'avant (Neon : branche du');
+  console.log('  plien differente, ou "Reset" dans le tableau de bord).');
   console.log('   NE CONNECTEZ PAS : vous creeriez un admin sur une base vide.');
   console.log('  ###########################################################\n');
 }
@@ -192,7 +194,7 @@ async function router(req, res) {
 
   /* ---- Sonde de sante (sans authentification) ---- */
   if (methode === 'GET' && chemin === '/api/sante') {
-    return envoyerJson(res, 200, { ok: true, utilisateurs: db.compterUtilisateurs() });
+    return envoyerJson(res, 200, { ok: true, utilisateurs: await db.compterUtilisateurs() });
   }
 
   /* ---- Connexion ---- */
@@ -210,7 +212,7 @@ async function router(req, res) {
       return envoyerErreur(res, 401, 'Identifiant ou mot de passe incorrect.');
     }
     auth.reinitialiserTentatives(cle);
-    const { jeton, csrf } = db.creerSession(utilisateur.id);
+    const { jeton, csrf } = await db.creerSession(utilisateur.id);
     return envoyerJson(res, 200,
       { utilisateur, csrf },
       { 'Set-Cookie': auth.cookieSession(jeton, auth.DUREE_COOKIE_S, req) });
@@ -218,20 +220,18 @@ async function router(req, res) {
 
   /* ---- Deconnexion ---- */
   if (methode === 'POST' && chemin === '/api/deconnexion') {
-    db.supprimerSession(auth.parserCookies(req)[auth.COOKIE]);
+    await db.supprimerSession(auth.parserCookies(req)[auth.COOKIE]);
     return envoyerJson(res, 200, { deconnecte: true },
       { 'Set-Cookie': auth.cookieVide(req) });
   }
 
   /* ---- Session courante ---- */
   if (methode === 'GET' && chemin === '/api/session') {
-    const s = auth.session(req);
+    const s = await auth.session(req);
     if (!s) return envoyerJson(res, 200, { connecte: false });
-    const complet = db.getUtilisateur(s.id);
+    const complet = await db.getUtilisateur(s.id);
     return envoyerJson(res, 200, {
       connecte: true,
-      // doit_changer_mdp doit etre transmis ici aussi : sinon un simple
-      // rechargement de la page permettrait d'echapper au changement obligatoire.
       utilisateur: {
         id: s.id,
         nom: s.nom,
@@ -244,16 +244,17 @@ async function router(req, res) {
 
   /* ---- Changer SON propre mot de passe (accessible meme si changement impose) ---- */
   if (methode === 'PUT' && chemin.endsWith('/mot-de-passe')) {
-    const s = auth.session(req);
+    const s = await auth.session(req);
     if (!s) return envoyerErreur(res, 401, 'Authentification requise.');
     const id = Number(chemin.split('/')[3]);
     if (id !== s.id) return envoyerErreur(res, 403, "Vous ne pouvez changer que votre propre mot de passe.");
     if (req.headers['x-csrf-token'] !== s.csrf) return envoyerErreur(res, 403, 'Jeton CSRF invalide. Rechargez la page.');
 
     const { actuel, nouveau } = await lireCorps(req);
-    const u = db.getUtilisateur(id);
+    const u = await db.getUtilisateur(id);
     if (!u) return envoyerErreur(res, 404, 'Utilisateur introuvable.');
-    if (!(await db.verifierMotDePasse(String(actuel || ''), db.db.prepare('SELECT mot_de_passe FROM users WHERE id = ?').get(id).mot_de_passe))) {
+    const motStocke = await db.motDePasseHache(id);
+    if (!(await db.verifierMotDePasse(String(actuel || ''), motStocke))) {
       auth.enregistrerEchec(auth.ip(req));
       return envoyerErreur(res, 401, 'Mot de passe actuel incorrect.');
     }
@@ -263,8 +264,9 @@ async function router(req, res) {
       return envoyerErreur(res, 400, 'Le nouveau mot de passe doit contenir au moins une lettre et un chiffre.');
     }
     if (mdp === String(actuel || '')) return envoyerErreur(res, 400, "Le nouveau mot de passe doit être différent de l'ancien.");
-    if (String(actuel || '') === process.env.ADMIN_PASSWORD) {
-      console.log("  Rappel : ADMIN_PASSWORD est toujours defini dans les secrets. Executez : flyctl secrets unset ADMIN_PASSWORD");
+    if (process.env.ADMIN_PASSWORD) {
+      console.log("  Rappel : ADMIN_PASSWORD est toujours defini dans les variables d'environnement.");
+      console.log("  Retirez-la (Render : Environment) : le compte s'authentifie desormais par sa base PostgreSQL.");
     }
 
     await db.modifierUtilisateur(id, { mot_de_passe: mdp });
@@ -274,93 +276,94 @@ async function router(req, res) {
 
   /* ---- Utilisateurs (admin) ---- */
   if (methode === 'GET' && chemin === '/api/utilisateurs') {
-    const refus = auth.verifierAcces(req, 'utilisateurs:ecrire');
+    const refus = await auth.verifierAcces(req, 'utilisateurs:ecrire');
     if (refus) return envoyerErreur(res, refus.code, refus.erreur);
-    return envoyerJson(res, 200, db.listerUtilisateurs());
+    return envoyerJson(res, 200, await db.listerUtilisateurs());
   }
 
   if (methode === 'POST' && chemin === '/api/utilisateurs') {
-    const refus = auth.verifierAcces(req, 'utilisateurs:ecrire');
+    const refus = await auth.verifierAcces(req, 'utilisateurs:ecrire');
     if (refus) return envoyerErreur(res, refus.code, refus.erreur);
     return envoyerJson(res, 201, await db.creerUtilisateur(await lireCorps(req)));
   }
 
   if (methode === 'PUT' && chemin.startsWith('/api/utilisateurs/')) {
-    const refus = auth.verifierAcces(req, 'utilisateurs:ecrire');
+    const refus = await auth.verifierAcces(req, 'utilisateurs:ecrire');
     if (refus) return envoyerErreur(res, refus.code, refus.erreur);
     const id = Number(chemin.split('/').pop());
     return envoyerJson(res, 200, await db.modifierUtilisateur(id, await lireCorps(req)));
   }
 
   if (methode === 'DELETE' && chemin.startsWith('/api/utilisateurs/')) {
-    const refus = auth.verifierAcces(req, 'utilisateurs:ecrire');
+    const refus = await auth.verifierAcces(req, 'utilisateurs:ecrire');
     if (refus) return envoyerErreur(res, refus.code, refus.erreur);
     const id = Number(chemin.split('/').pop());
-    if (id === auth.session(req).id) return envoyerErreur(res, 400, 'Vous ne pouvez pas supprimer votre propre compte.');
+    const s = await auth.session(req);
+    if (id === s?.id) return envoyerErreur(res, 400, 'Vous ne pouvez pas supprimer votre propre compte.');
     return envoyerJson(res, 200, await db.supprimerUtilisateur(id));
   }
 
   /* ---- Categories ---- */
   if (methode === 'GET' && chemin === '/api/categories') {
-    const refus = auth.verifierAcces(req, 'categories:lire');
+    const refus = await auth.verifierAcces(req, 'categories:lire');
     if (refus) return envoyerErreur(res, refus.code, refus.erreur);
-    return envoyerJson(res, 200, db.listCategories());
+    return envoyerJson(res, 200, await db.listCategories());
   }
 
   if (methode === 'POST' && chemin === '/api/categories') {
-    const refus = auth.verifierAcces(req, 'categories:ecrire');
+    const refus = await auth.verifierAcces(req, 'categories:ecrire');
     if (refus) return envoyerErreur(res, refus.code, refus.erreur);
-    return envoyerJson(res, 201, db.createCategorie(await lireCorps(req)));
+    return envoyerJson(res, 201, await db.createCategorie(await lireCorps(req)));
   }
 
   if (methode === 'PUT' && chemin.startsWith('/api/categories/')) {
-    const refus = auth.verifierAcces(req, 'categories:ecrire');
+    const refus = await auth.verifierAcces(req, 'categories:ecrire');
     if (refus) return envoyerErreur(res, refus.code, refus.erreur);
-    return envoyerJson(res, 200, db.updateCategorie(Number(chemin.split('/').pop()), await lireCorps(req)));
+    return envoyerJson(res, 200, await db.updateCategorie(Number(chemin.split('/').pop()), await lireCorps(req)));
   }
 
   if (methode === 'DELETE' && chemin.startsWith('/api/categories/')) {
-    const refus = auth.verifierAcces(req, 'categories:ecrire');
+    const refus = await auth.verifierAcces(req, 'categories:ecrire');
     if (refus) return envoyerErreur(res, refus.code, refus.erreur);
-    return envoyerJson(res, 200, db.deleteCategorie(Number(chemin.split('/').pop())));
+    return envoyerJson(res, 200, await db.deleteCategorie(Number(chemin.split('/').pop())));
   }
 
   /* ---- Operations ---- */
   if (methode === 'GET' && chemin === '/api/operations') {
-    const refus = auth.verifierAcces(req, 'operations:lire');
+    const refus = await auth.verifierAcces(req, 'operations:lire');
     if (refus) return envoyerErreur(res, refus.code, refus.erreur);
-    return envoyerJson(res, 200, db.listOperations(filtres(url)));
+    return envoyerJson(res, 200, await db.listOperations(filtres(url)));
   }
 
   if (methode === 'POST' && chemin === '/api/operations') {
-    const refus = auth.verifierAcces(req, 'operations:ecrire');
+    const refus = await auth.verifierAcces(req, 'operations:ecrire');
     if (refus) return envoyerErreur(res, refus.code, refus.erreur);
-    return envoyerJson(res, 201, db.createOperation(await lireCorps(req)));
+    return envoyerJson(res, 201, await db.createOperation(await lireCorps(req)));
   }
 
   if (methode === 'PUT' && chemin.startsWith('/api/operations/')) {
-    const refus = auth.verifierAcces(req, 'operations:ecrire');
+    const refus = await auth.verifierAcces(req, 'operations:ecrire');
     if (refus) return envoyerErreur(res, refus.code, refus.erreur);
-    return envoyerJson(res, 200, db.updateOperation(Number(chemin.split('/').pop()), await lireCorps(req)));
+    return envoyerJson(res, 200, await db.updateOperation(Number(chemin.split('/').pop()), await lireCorps(req)));
   }
 
   if (methode === 'DELETE' && chemin.startsWith('/api/operations/')) {
-    const refus = auth.verifierAcces(req, 'operations:supprimer');
+    const refus = await auth.verifierAcces(req, 'operations:supprimer');
     if (refus) return envoyerErreur(res, refus.code, refus.erreur);
-    return envoyerJson(res, 200, db.deleteOperation(Number(chemin.split('/').pop())));
+    return envoyerJson(res, 200, await db.deleteOperation(Number(chemin.split('/').pop())));
   }
 
   /* ---- Statistiques, export, sauvegarde ---- */
   if (methode === 'GET' && chemin === '/api/stats') {
-    const refus = auth.verifierAcces(req, 'stats:lire');
+    const refus = await auth.verifierAcces(req, 'stats:lire');
     if (refus) return envoyerErreur(res, refus.code, refus.erreur);
-    return envoyerJson(res, 200, db.stats(filtres(url)));
+    return envoyerJson(res, 200, await db.stats(filtres(url)));
   }
 
   if (methode === 'GET' && chemin === '/api/export.csv') {
-    const refus = auth.verifierAcces(req, 'operations:lire');
+    const refus = await auth.verifierAcces(req, 'operations:lire');
     if (refus) return envoyerErreur(res, refus.code, refus.erreur);
-    const csv = Buffer.from('﻿' + db.exportCsv(filtres(url)), 'utf8');
+    const csv = Buffer.from('﻿' + await db.exportCsv(filtres(url)), 'utf8');
     res.writeHead(200, {
       ...auth.EN_TETES_SECURITE,
       'Content-Type': 'text/csv; charset=utf-8',
@@ -372,12 +375,12 @@ async function router(req, res) {
   }
 
   if (methode === 'GET' && chemin === '/api/sauvegarde') {
-    const refus = auth.verifierAcces(req, 'utilisateurs:ecrire');
+    const refus = await auth.verifierAcces(req, 'utilisateurs:ecrire');
     if (refus) return envoyerErreur(res, refus.code, refus.erreur);
     return envoyerJson(res, 200, {
       genere_le: new Date().toISOString(),
-      categories: db.listCategories(),
-      operations: db.db.prepare('SELECT * FROM operations').all(),
+      categories: await db.listCategories(),
+      operations: await db.listerOperationsBrutes(),
     });
   }
 
@@ -409,18 +412,19 @@ serveur.headersTimeout = 20000;
 serveur.requestTimeout = 30000;
 
 (async () => {
+  await db.init();
   await verifierPremierLancement();
-  avertirSiVolumePerdu();
-  const nettoyes = db.nettoyerSessionsExpirees();
+  await avertirSiBaseVide();
+  const nettoyes = await db.nettoyerSessionsExpirees();
   if (nettoyes) console.log(`  ${nettoyes} session(s) expiree(s) supprimee(s).`);
-  setInterval(() => db.nettoyerSessionsExpirees(), 3600_000).unref();
+  setInterval(() => { db.nettoyerSessionsExpirees().catch(() => {}); }, 3600_000).unref();
 
   serveur.listen(PORT, HOST, () => {
     console.log('');
     console.log('  Comptabilite - Vente de poisson');
     console.log('  ---------------------------------');
     console.log(`  Serveur : http://${HOST}:${PORT}`);
-    console.log(`  Base    : ${db.DB_PATH}`);
+    console.log(`  Base    : PostgreSQL (${db.descriptionBase()})`);
     console.log(`  Mode    : ${PRODUCTION ? 'production' : 'developpement'}`);
     if (PRODUCTION) {
       console.log(`  HTTPS   : cookie Secure ${auth.estHttps({ headers: {}, socket: {} }) ? 'actif' : 'actif uniquement sur les requetes HTTPS'}`);
@@ -439,5 +443,14 @@ serveur.on('error', (e) => {
   process.exit(1);
 });
 
-process.on('SIGINT', () => { console.log('\n  Arret du serveur.'); process.exit(0); });
-process.on('SIGTERM', () => { process.exit(0); });
+/** Render envoie SIGTERM a chaque redemarrage/redploiement : on ferme le
+ *  pool de connexions avant de quitter, sinon PostgreSQL note des connexions
+ *  restees ouvertes et peut les refuser temporairement. */
+const arreter = async (signal) => {
+  console.log(`\n  Arret du serveur (${signal}).`);
+  serveur.close();
+  try { await db.fermer(); } catch { /* deja fermee */ }
+  process.exit(0);
+};
+process.on('SIGINT', () => { arreter('SIGINT'); });
+process.on('SIGTERM', () => { arreter('SIGTERM'); });

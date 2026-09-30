@@ -1,17 +1,30 @@
 'use strict';
 
-const { DatabaseSync } = require('node:sqlite');
+/**
+ * Couche base de donnees - PostgreSQL (Neon en production).
+ *
+ * Toutes les fonctions sont asynchrones : une requete PostgreSQL demande un
+ * aller-retour reseau, la base ne peut donc pas etre interrogee de facon
+ * synchrone comme pouvait l'etre SQLite.
+ */
+
 const crypto = require('node:crypto');
-const path = require('node:path');
-const fs = require('node:fs');
 const { promisify } = require('node:util');
-
 const scrypt = promisify(crypto.scrypt);
+const { Pool, types } = require('pg');
 
-const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
-const DB_PATH = process.env.COMPA_DB || path.join(DATA_DIR, 'compta.db');
+const TYPES = ['entree', 'sortie', 'investissement'];
+const LIBELLES = { entree: 'Entrée', sortie: 'Sortie', investissement: 'Investissement' };
+const ORDRE_TYPE = { entree: 0, sortie: 1, investissement: 2 };
+const DUREE_SESSION_JOURS = 7;
 
-fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+/* PostgreSQL renvoie nativement les DATE et TIMESTAMP sous forme d'objet
+   Date. On les garde en texte 'AAAA-MM-JJ' / 'AAAA-MM-JJ HH:MM:SS' :
+   l'interface fait du .slice(0,10) sur ces valeurs, et cela evite tout
+   decalage de fuseau horaire cote client. */
+types.setTypeParser(1082, (v) => v);   // date
+types.setTypeParser(1114, (v) => v);   // timestamp
+types.setTypeParser(1184, (v) => v);   // timestamptz
 
 class ErreurValidation extends Error {
   constructor(message) {
@@ -20,20 +33,7 @@ class ErreurValidation extends Error {
     this.statut = 400;
   }
 }
-const invalide = (m) => {
-  throw new ErreurValidation(m);
-};
-
-const TYPES = ['entree', 'sortie', 'investissement'];
-const LIBELLES = {
-  entree: 'Entrée',
-  sortie: 'Sortie',
-  investissement: 'Investissement',
-};
-
-const db = new DatabaseSync(DB_PATH);
-db.exec('PRAGMA journal_mode = WAL');
-db.exec('PRAGMA foreign_keys = ON');
+const invalide = (m) => { throw new ErreurValidation(m); };
 
 /* ------------------------------------------------------------------ */
 /* Mot de passe : scrypt (dans node:crypto, sans dependance)          */
@@ -44,7 +44,7 @@ const LONGUEUR_CLE = 64;
 
 async function hacherMotDePasse(motDePasse) {
   const sel = crypto.randomBytes(16);
-  const cle = await scrypt(motDePasse.normalize('NFKC'), sel, LONGUEUR_CLE, SCRYPT);
+  const cle = await scrypt(String(motDePasse).normalize('NFKC'), sel, LONGUEUR_CLE, SCRYPT);
   return ['scrypt', SCRYPT.N, SCRYPT.r, SCRYPT.p, sel.toString('base64'), cle.toString('base64')].join('$');
 }
 
@@ -56,7 +56,7 @@ async function verifierMotDePasse(motDePasse, stocke) {
     const sel = Buffer.from(selB64, 'base64');
     const attendu = Buffer.from(cleB64, 'base64');
     if (!sel.length || !attendu.length) return false;
-    const cle = await scrypt(motDePasse.normalize('NFKC'), sel, attendu.length, {
+    const cle = await scrypt(String(motDePasse).normalize('NFKC'), sel, attendu.length, {
       N: Number(N), r: Number(r), p: Number(p), maxmem: SCRYPT.maxmem,
     });
     return cle.length === attendu.length && crypto.timingSafeEqual(cle, attendu);
@@ -68,172 +68,196 @@ async function verifierMotDePasse(motDePasse, stocke) {
 const hacherJeton = (jeton) => crypto.createHash('sha256').update(jeton).digest('hex');
 
 /* ------------------------------------------------------------------ */
+/* Connexion                                                           */
+/* ------------------------------------------------------------------ */
+
+let pool = null;
+
+function urlConnection() {
+  const u = process.env.DATABASE_URL || process.env.POSTGRES_URL || '';
+  if (!u) {
+    console.error('\n  DATABASE_URL est obligatoire : cette version attend PostgreSQL (Neon).');
+    console.error('  Render : variable d\'environnement = chaine de connexion Neon.');
+    console.error('  Local  : docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=x postgres:16\n');
+    process.exit(1);
+  }
+  return u;
+}
+
+function estLocal(hote) {
+  return /^(localhost|127\.0\.0\.1|0\.0\.0\.0|::1|postgres|db|host\.docker\.internal)$/i.test(String(hote || ''));
+}
+
+/**
+ * Options de connexion.
+ *
+ * Si la chaine contient un `sslmode`, on ne touche a rien : c'est PostgreSQL
+ * qui l'applique, et une chaine Neon contient `sslmode=require` (obligatoire,
+ * Neon refuse le trafic en clair). Forcer le TLS nous-meme rendrait impossible
+ * de se connecter a un PostgreSQL local configure sans SSL.
+ *
+ * Sans `sslmode`, on ne force rien - on se contente de signaler le cas d'une
+ * base distante en clair, plutot que d'echouer au demarrage.
+ */
+function optionsConnexion(u) {
+  const options = {
+    connectionString: u,
+    max: Number(process.env.PGPOOL_MAX || 5),
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 20_000,
+  };
+  if (/[?&]sslmode=/i.test(u)) return options;
+
+  let hote = '';
+  try { hote = new URL(u).hostname; } catch { /* URL illisible : rien a dire */ }
+  if (hote && !estLocal(hote)) {
+    console.warn(`  ATTENTION : DATABASE_URL ne contient pas de sslmode ; la connexion vers ${hote} ne sera pas chiffree.`);
+    console.warn("  Ajoutez ?sslmode=require a la chaine (c'est ce que fournit Neon).");
+  }
+  return options;
+}
+
+const q = async (sql, params = []) => (await pool.query(sql, params)).rows;
+
+/* ------------------------------------------------------------------ */
 /* Schema                                                              */
 /* ------------------------------------------------------------------ */
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS categories (
-    id     INTEGER PRIMARY KEY AUTOINCREMENT,
-    nom    TEXT    NOT NULL UNIQUE,
-    type   TEXT    NOT NULL CHECK (type IN ('entree', 'sortie')),
-    unite  TEXT,
-    ordre  INTEGER NOT NULL DEFAULT 0
-  );
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS categories (
+  id     SERIAL PRIMARY KEY,
+  nom    TEXT    NOT NULL UNIQUE,
+  type   TEXT    NOT NULL CHECK (type IN ('entree','sortie','investissement')),
+  unite  TEXT,
+  ordre  INTEGER NOT NULL DEFAULT 0
+);
 
-  CREATE TABLE IF NOT EXISTS operations (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    date         TEXT    NOT NULL,
-    categorie_id INTEGER NOT NULL REFERENCES categories(id),
-    montant      REAL    NOT NULL DEFAULT 0,
-    quantite     REAL,
-    prix_unitaire REAL,
-    unite        TEXT,
-    note         TEXT,
-    cree_le      TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
-  );
+CREATE TABLE IF NOT EXISTS operations (
+  id            SERIAL PRIMARY KEY,
+  date          DATE    NOT NULL,
+  categorie_id  INTEGER NOT NULL REFERENCES categories(id) ON DELETE RESTRICT,
+  montant       NUMERIC NOT NULL DEFAULT 0,
+  quantite      NUMERIC,
+  prix_unitaire NUMERIC,
+  unite         TEXT,
+  note          TEXT,
+  cree_le       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 
-  CREATE TABLE IF NOT EXISTS users (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    nom          TEXT    NOT NULL UNIQUE,
-    mot_de_passe TEXT    NOT NULL,
-    role         TEXT    NOT NULL CHECK (role IN ('admin', 'saisie')),
-    actif        INTEGER NOT NULL DEFAULT 1,
-    cree_le      TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
-  );
-  CREATE TABLE IF NOT EXISTS sessions (
-    token_hash TEXT PRIMARY KEY,
-    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    csrf       TEXT    NOT NULL,
-    cree_le    TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
-    expire_le  TEXT    NOT NULL
-  );
+CREATE TABLE IF NOT EXISTS users (
+  id               SERIAL PRIMARY KEY,
+  nom              TEXT    NOT NULL UNIQUE,
+  mot_de_passe     TEXT    NOT NULL,
+  role             TEXT    NOT NULL CHECK (role IN ('admin','saisie')),
+  actif            BOOLEAN NOT NULL DEFAULT TRUE,
+  cree_le          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  doit_changer_mdp BOOLEAN NOT NULL DEFAULT FALSE
+);
 
-  CREATE INDEX IF NOT EXISTS idx_operations_date     ON operations(date);
-  CREATE INDEX IF NOT EXISTS idx_operations_categorie ON operations(categorie_id);
-  CREATE INDEX IF NOT EXISTS idx_sessions_user       ON sessions(user_id);
-  CREATE INDEX IF NOT EXISTS idx_sessions_expiration  ON sessions(expire_le);
-`);
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash TEXT PRIMARY KEY,
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  csrf       TEXT    NOT NULL,
+  cree_le    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  expire_le  TIMESTAMPTZ NOT NULL
+);
 
-/* ------------------------------------------------------------------ */
-/* Migration : ajout de la nature "investissement"                     */
-/* ------------------------------------------------------------------ */
+CREATE INDEX IF NOT EXISTS idx_operations_date      ON operations(date);
+CREATE INDEX IF NOT EXISTS idx_operations_categorie ON operations(categorie_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_user        ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_expiration   ON sessions(expire_le);
+`;
 
-(function migrerNatureInvestissement() {
-  const table = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='categories'").get();
-  if (!table || table.sql.includes("'investissement'")) return;
+async function init() {
+  pool = new Pool(optionsConnexion(urlConnection()));
+  // Une base Neon peut se mettre en veille : on retente quelques fois avant
+  // d'abandonner, pour absorber un demarrage a froid.
+  pool.on('error', (e) => console.error('  [base] erreur du pool :', e.message));
+  await pool.query(SCHEMA);
+  await ensureDefaultCategories();
+}
 
-  db.exec('PRAGMA foreign_keys = OFF');
-  try {
-    db.exec('BEGIN');
-    db.exec(`CREATE TABLE categories_migration (
-      id     INTEGER PRIMARY KEY AUTOINCREMENT,
-      nom    TEXT    NOT NULL UNIQUE,
-      type   TEXT    NOT NULL CHECK (type IN ('entree','sortie','investissement')),
-      unite  TEXT,
-      ordre  INTEGER NOT NULL DEFAULT 0
-    )`);
-    db.exec('INSERT INTO categories_migration (id, nom, type, unite, ordre) SELECT id, nom, type, unite, ordre FROM categories');
-    db.exec('DELETE FROM categories WHERE id NOT IN (SELECT id FROM categories_migration)');
-    db.exec('DROP TABLE categories');
-    db.exec('ALTER TABLE categories_migration RENAME TO categories');
-    db.exec(`INSERT INTO sqlite_sequence (name, seq)
-             SELECT 'categories', COALESCE(MAX(id), 0) FROM categories
-             WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name='categories')`);
-    db.exec('COMMIT');
-  } catch (e) {
-    db.exec('ROLLBACK');
-    throw e;
-  } finally {
-    db.exec('PRAGMA foreign_keys = ON');
+const fermer = async () => { if (pool) { await pool.end(); pool = null; } };
+
+const CATEGORIES_PAR_DEFAUT = [
+  ['Vente détail', 'entree', 'kg', 1],
+  ['Vente gros', 'entree', 'kg', 2],
+  ['Achat poisson', 'sortie', 'kg', 3],
+  ['Glace / conservation', 'sortie', null, 4],
+  ['Transport', 'sortie', null, 5],
+  ['Emballage', 'sortie', null, 6],
+  ['Location étal', 'sortie', null, 7],
+  ['Salaires', 'sortie', null, 8],
+  ['Investissement', 'investissement', null, 9],
+];
+
+async function ensureDefaultCategories() {
+  for (const [nom, type, unite, ordre] of CATEGORIES_PAR_DEFAUT) {
+    await pool.query(
+      `INSERT INTO categories (nom, type, unite, ordre) VALUES ($1,$2,$3,$4)
+       ON CONFLICT (nom) DO NOTHING`,
+      [nom, type, unite, ordre]
+    );
   }
-})();
-
-(function migrerColonneChangementMdp() {
-  const colonnes = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
-  if (colonnes.includes('doit_changer_mdp')) return;
-  db.exec('ALTER TABLE users ADD COLUMN doit_changer_mdp INTEGER NOT NULL DEFAULT 0');
-})();
+}
 
 /* ------------------------------------------------------------------ */
 /* Categories                                                          */
 /* ------------------------------------------------------------------ */
 
-const CATEGORIES_PAR_DEFAUT = [
-  { nom: 'Vente détail',          type: 'entree',        unite: 'kg', ordre: 1 },
-  { nom: 'Vente gros',            type: 'entree',        unite: 'kg', ordre: 2 },
-  { nom: 'Achat poisson',         type: 'sortie',        unite: 'kg', ordre: 3 },
-  { nom: 'Glace / conservation',  type: 'sortie',        unite: null, ordre: 4 },
-  { nom: 'Transport',             type: 'sortie',        unite: null, ordre: 5 },
-  { nom: 'Emballage',             type: 'sortie',        unite: null, ordre: 6 },
-  { nom: 'Location étal',         type: 'sortie',        unite: null, ordre: 7 },
-  { nom: 'Salaires',              type: 'sortie',        unite: null, ordre: 8 },
-  { nom: 'Investissement',        type: 'investissement', unite: null, ordre: 9 },
-];
+const mapCategorie = (r) => (r ? { ...r, id: Number(r.id), ordre: Number(r.ordre) } : null);
+const trier = (a, b) =>
+  (ORDRE_TYPE[a.type] - ORDRE_TYPE[b.type]) || (a.ordre - b.ordre) || a.nom.localeCompare(b.nom, 'fr');
 
-const insertCat = db.prepare(
-  'INSERT OR IGNORE INTO categories (nom, type, unite, ordre) VALUES (?, ?, ?, ?)'
-);
-for (const c of CATEGORIES_PAR_DEFAUT) insertCat.run(c.nom, c.type, c.unite, c.ordre);
-
-const catParNomDb = db.prepare('SELECT id, unite FROM categories WHERE nom = ?');
-for (const c of CATEGORIES_PAR_DEFAUT) {
-  const row = catParNomDb.get(c.nom);
-  if (row) db.prepare('UPDATE categories SET unite = ? WHERE id = ?').run(c.unite, row.id);
+async function listCategories() {
+  return (await q('SELECT * FROM categories')).map(mapCategorie).sort(trier);
 }
 
-const ORDRE_TYPE = { entree: 0, sortie: 1, investissement: 2 };
-
-function listCategories() {
-  return db
-    .prepare('SELECT * FROM categories')
-    .all()
-    .map((r) => ({ ...r, id: Number(r.id), ordre: Number(r.ordre) }))
-    .sort((a, b) => (ORDRE_TYPE[a.type] - ORDRE_TYPE[b.type]) || (a.ordre - b.ordre) || a.nom.localeCompare(b.nom, 'fr'));
+async function getCategorie(id) {
+  const [row] = await q('SELECT * FROM categories WHERE id = $1', [id]);
+  return mapCategorie(row);
 }
 
-function getCategorie(id) {
-  const r = db.prepare('SELECT * FROM categories WHERE id = ?').get(id);
-  return r ? { ...r, id: Number(r.id), ordre: Number(r.ordre) } : null;
-}
-
-function createCategorie({ nom, type, unite = null }) {
+async function createCategorie({ nom, type, unite = null }) {
   if (!nom || !String(nom).trim()) invalide('Le nom de la catégorie est obligatoire.');
   if (!TYPES.includes(type)) invalide(`Le type doit être l'un de : ${TYPES.join(', ')}.`);
   const nomPropre = String(nom).trim();
-  if (db.prepare('SELECT id FROM categories WHERE nom = ?').get(nomPropre)) {
-    invalide(`La catégorie « ${nomPropre} » existe déjà.`);
-  }
-  const max = db.prepare('SELECT COALESCE(MAX(ordre), 0) AS m FROM categories').get();
-  const res = db
-    .prepare('INSERT INTO categories (nom, type, unite, ordre) VALUES (?, ?, ?, ?)')
-    .run(nomPropre, type, unite || null, Number(max.m) + 1);
-  return getCategorie(Number(res.lastInsertRowid));
+  if (await getCategorieParNom(nomPropre)) invalide(`La catégorie « ${nomPropre} » existe déjà.`);
+  const [{ m }] = await q('SELECT COALESCE(MAX(ordre), 0) AS m FROM categories');
+  const [res] = await q(
+    'INSERT INTO categories (nom, type, unite, ordre) VALUES ($1,$2,$3,$4) RETURNING id',
+    [nomPropre, type, unite || null, Number(m) + 1]
+  );
+  return getCategorie(Number(res.id));
 }
 
-function updateCategorie(id, { nom, type, unite }) {
-  if (!getCategorie(id)) invalide('Catégorie introuvable.');
+async function getCategorieParNom(nom) {
+  const [row] = await q('SELECT * FROM categories WHERE nom = $1', [nom]);
+  return mapCategorie(row);
+}
+
+async function updateCategorie(id, { nom, type, unite }) {
+  if (!(await getCategorie(id))) invalide('Catégorie introuvable.');
   if (nom !== undefined) {
     if (!String(nom).trim()) invalide('Le nom de la catégorie est obligatoire.');
-    db.prepare('UPDATE categories SET nom = ? WHERE id = ?').run(String(nom).trim(), id);
+    await q('UPDATE categories SET nom = $1 WHERE id = $2', [String(nom).trim(), id]);
   }
   if (type !== undefined) {
     if (!TYPES.includes(type)) invalide(`Le type doit être l'un de : ${TYPES.join(', ')}.`);
-    db.prepare('UPDATE categories SET type = ? WHERE id = ?').run(type, id);
+    await q('UPDATE categories SET type = $1 WHERE id = $2', [type, id]);
   }
-  if (unite !== undefined) {
-    db.prepare('UPDATE categories SET unite = ? WHERE id = ?').run(unite || null, id);
-  }
+  if (unite !== undefined) await q('UPDATE categories SET unite = $1 WHERE id = $2', [unite || null, id]);
   return getCategorie(id);
 }
 
-function deleteCategorie(id) {
-  const cat = getCategorie(id);
+async function deleteCategorie(id) {
+  const cat = await getCategorie(id);
   if (!cat) invalide('Catégorie introuvable.');
-  const nb = db.prepare('SELECT COUNT(*) AS n FROM operations WHERE categorie_id = ?').get(id);
-  if (Number(nb.n) > 0) {
-    invalide(`Impossible de supprimer « ${cat.nom} » : ${nb.n} opération(s) utilisent cette catégorie.`);
+  const [{ n }] = await q('SELECT COUNT(*) AS n FROM operations WHERE categorie_id = $1', [id]);
+  if (Number(n) > 0) {
+    invalide(`Impossible de supprimer « ${cat.nom} » : ${n} opération(s) utilisent cette catégorie.`);
   }
-  db.prepare('DELETE FROM categories WHERE id = ?').run(id);
+  await q('DELETE FROM categories WHERE id = $1', [id]);
   return { supprime: true };
 }
 
@@ -243,21 +267,21 @@ function deleteCategorie(id) {
 
 const RE_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
-function normaliser({ date, categorie_id, montant, quantite, prix_unitaire, unite, note }) {
-  const cat = getCategorie(categorie_id);
+async function normaliser({ date, categorie_id, montant, quantite, prix_unitaire, unite, note }) {
+  const cat = await getCategorie(categorie_id);
   if (!cat) invalide('Catégorie introuvable.');
   if (!date || !RE_DATE.test(date)) invalide('Date invalide (format attendu : AAAA-MM-JJ).');
 
-  const q = quantite === '' || quantite === null || quantite === undefined ? null : Number(quantite);
+  const qte = quantite === '' || quantite === null || quantite === undefined ? null : Number(quantite);
   const pu = prix_unitaire === '' || prix_unitaire === null || prix_unitaire === undefined
     ? null
     : Number(prix_unitaire);
 
-  if (q !== null && (!Number.isFinite(q) || q <= 0)) invalide('La quantité doit être un nombre positif.');
+  if (qte !== null && (!Number.isFinite(qte) || qte <= 0)) invalide('La quantité doit être un nombre positif.');
   if (pu !== null && (!Number.isFinite(pu) || pu < 0)) invalide('Le prix unitaire doit être un nombre positif ou nul.');
 
   let m;
-  if (q !== null && pu !== null) m = Math.round(q * pu * 100) / 100;
+  if (qte !== null && pu !== null) m = Math.round(qte * pu * 100) / 100;
   else if (montant !== '' && montant !== null && montant !== undefined) {
     m = Number(montant);
     if (!Number.isFinite(m)) invalide('Le montant doit être un nombre.');
@@ -270,7 +294,7 @@ function normaliser({ date, categorie_id, montant, quantite, prix_unitaire, unit
     date,
     categorie_id: Number(categorie_id),
     montant: m,
-    quantite: q,
+    quantite: qte,
     prix_unitaire: pu,
     unite: unite || cat.unite || null,
     note: note ? String(note).trim() : null,
@@ -283,52 +307,59 @@ const SELECT_OP = `
   JOIN categories c ON c.id = o.categorie_id
 `;
 
-const mapOp = (r) =>
-  r
-    ? {
-        ...r,
-        id: Number(r.id),
-        categorie_id: Number(r.categorie_id),
-        montant: Number(r.montant),
-        quantite: r.quantite === null ? null : Number(r.quantite),
-        prix_unitaire: r.prix_unitaire === null ? null : Number(r.prix_unitaire),
-      }
-    : null;
+const mapOp = (r) => (r ? {
+  ...r,
+  id: Number(r.id),
+  categorie_id: Number(r.categorie_id),
+  montant: Number(r.montant),
+  quantite: r.quantite === null ? null : Number(r.quantite),
+  prix_unitaire: r.prix_unitaire === null ? null : Number(r.prix_unitaire),
+} : null);
 
-function listOperations(f = {}) {
+/** Construit la clause WHERE et les arguments correspondants. */
+function construireFiltres(f) {
   const where = [];
   const args = [];
-  if (f.debut) { where.push('o.date >= ?'); args.push(f.debut); }
-  if (f.fin) { where.push('o.date <= ?'); args.push(f.fin); }
-  if (f.categorie_id) { where.push('o.categorie_id = ?'); args.push(Number(f.categorie_id)); }
-  if (TYPES.includes(f.type)) { where.push('c.type = ?'); args.push(f.type); }
+  const ajouter = (sql, valeur) => { where.push(sql); args.push(valeur); };
+
+  if (f.debut) ajouter('o.date >= $' + (args.length + 1), f.debut);
+  if (f.fin) ajouter('o.date <= $' + (args.length + 1), f.fin);
+  if (f.categorie_id) ajouter('o.categorie_id = $' + (args.length + 1), Number(f.categorie_id));
+  if (TYPES.includes(f.type)) ajouter('c.type = $' + (args.length + 1), f.type);
   if (f.texte) {
-    where.push("(LOWER(IFNULL(o.note,'')) LIKE ? OR LOWER(c.nom) LIKE ?)");
-    const t = `%${String(f.texte).toLowerCase()}%`;
-    args.push(t, t);
+    const t = '%' + String(f.texte).toLowerCase() + '%';
+    ajouter("(COALESCE(o.note,'') ILIKE $" + (args.length + 1) + " OR c.nom ILIKE $" + (args.length + 1) + ")", t);
   }
-  const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  return { clause: where.length ? 'WHERE ' + where.join(' AND ') : '', args };
+}
+
+async function listOperations(f = {}) {
+  const { clause, args } = construireFiltres(f);
   const ordre = f.ordre === 'asc' ? 'ASC' : 'DESC';
-  return db.prepare(`${SELECT_OP} ${clause} ORDER BY o.date ${ordre}, o.id ${ordre}`).all(...args).map(mapOp);
+  return (await q(`${SELECT_OP} ${clause} ORDER BY o.date ${ordre}, o.id ${ordre}`, args)).map(mapOp);
 }
 
-const getOperation = (id) => mapOp(db.prepare(`${SELECT_OP} WHERE o.id = ?`).get(id));
-
-function createOperation(input) {
-  const d = normaliser(input);
-  const res = db
-    .prepare(`INSERT INTO operations (date, categorie_id, montant, quantite, prix_unitaire, unite, note)
-              VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(d.date, d.categorie_id, d.montant, d.quantite, d.prix_unitaire, d.unite, d.note);
-  return getOperation(Number(res.lastInsertRowid));
+async function getOperation(id) {
+  const [row] = await q(`${SELECT_OP} WHERE o.id = $1`, [id]);
+  return mapOp(row);
 }
 
-function updateOperation(id, input) {
-  const actuel = getOperation(id);
+async function createOperation(input) {
+  const d = await normaliser(input);
+  const [res] = await q(
+    `INSERT INTO operations (date, categorie_id, montant, quantite, prix_unitaire, unite, note)
+     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+    [d.date, d.categorie_id, d.montant, d.quantite, d.prix_unitaire, d.unite, d.note]
+  );
+  return getOperation(Number(res.id));
+}
+
+async function updateOperation(id, input) {
+  const actuel = await getOperation(id);
   if (!actuel) invalide('Opération introuvable.');
   const quantite = input.quantite !== undefined ? input.quantite : actuel.quantite;
   const prixUnitaire = input.prix_unitaire !== undefined ? input.prix_unitaire : actuel.prix_unitaire;
-  const d = normaliser({
+  const d = await normaliser({
     date: input.date ?? actuel.date,
     categorie_id: input.categorie_id ?? actuel.categorie_id,
     quantite,
@@ -342,93 +373,88 @@ function updateOperation(id, input) {
     unite: input.unite !== undefined ? input.unite : actuel.unite,
     note: input.note !== undefined ? input.note : actuel.note,
   });
-  db.prepare(`UPDATE operations
-              SET date = ?, categorie_id = ?, montant = ?, quantite = ?, prix_unitaire = ?, unite = ?, note = ?
-              WHERE id = ?`)
-    .run(d.date, d.categorie_id, d.montant, d.quantite, d.prix_unitaire, d.unite, d.note, id);
+  await q(
+    `UPDATE operations
+     SET date = $1, categorie_id = $2, montant = $3, quantite = $4, prix_unitaire = $5, unite = $6, note = $7
+     WHERE id = $8`,
+    [d.date, d.categorie_id, d.montant, d.quantite, d.prix_unitaire, d.unite, d.note, id]
+  );
   return getOperation(id);
 }
 
-function deleteOperation(id) {
-  if (!getOperation(id)) invalide('Opération introuvable.');
-  db.prepare('DELETE FROM operations WHERE id = ?').run(id);
+async function deleteOperation(id) {
+  if (!(await getOperation(id))) invalide('Opération introuvable.');
+  await q('DELETE FROM operations WHERE id = $1', [id]);
   return { supprime: true };
 }
+
+const compterOperations = async () => Number((await q('SELECT COUNT(*) AS n FROM operations'))[0].n);
 
 /* ------------------------------------------------------------------ */
 /* Statistiques                                                         */
 /* ------------------------------------------------------------------ */
 
-function conditionsFils(f) {
-  const where = [];
-  const args = [];
-  if (f.debut) { where.push('o.date >= ?'); args.push(f.debut); }
-  if (f.fin) { where.push('o.date <= ?'); args.push(f.fin); }
-  if (f.categorie_id) { where.push('o.categorie_id = ?'); args.push(Number(f.categorie_id)); }
-  if (TYPES.includes(f.type)) { where.push('c.type = ?'); args.push(f.type); }
-  return { clause: where.length ? `WHERE ${where.join(' AND ')}` : '', args };
-}
-
 const arrondi = (n) => Math.round(n * 100) / 100;
 
-function stats(f = {}) {
-  const { clause, args } = conditionsFils(f);
+async function stats(f = {}) {
+  const { clause, args } = construireFiltres(f);
 
-  const g = db
-    .prepare(`SELECT
+  const [g] = await q(
+    `SELECT
         COALESCE(SUM(CASE WHEN c.type='entree'         THEN o.montant END), 0) AS entrees,
         COALESCE(SUM(CASE WHEN c.type='sortie'         THEN o.montant END), 0) AS sorties,
         COALESCE(SUM(CASE WHEN c.type='investissement' THEN o.montant END), 0) AS investissements,
         COALESCE(SUM(CASE WHEN c.type='entree'         THEN 1 END), 0) AS nb_entrees,
         COALESCE(SUM(CASE WHEN c.type='sortie'         THEN 1 END), 0) AS nb_sorties,
         COALESCE(SUM(CASE WHEN c.type='investissement' THEN 1 END), 0) AS nb_investissements
-      FROM operations o JOIN categories c ON c.id = o.categorie_id ${clause}`)
-    .get(...args);
+     FROM operations o JOIN categories c ON c.id = o.categorie_id ${clause}`,
+    args
+  );
 
   const entrees = Number(g.entrees);
   const sorties = Number(g.sorties);
   const investissements = Number(g.investissements);
   const resultat = arrondi(entrees - sorties);
 
-  const sousFils = conditionsFils(f);
-  const jointureSupplement =
-    sousFils.clause ? 'AND ' + sousFils.clause.replace(/^WHERE /, '') : '';
+  // Memes filtres, mais appliques dans le LEFT JOIN pour garder les categories
+  // vides (elles doivent apparaitre avec un total de 0).
+  const jointureSupplement = clause ? 'AND ' + clause.replace(/^WHERE /, '') : '';
 
-  const parCategorie = db
-    .prepare(`SELECT c.id, c.nom, c.type,
-                     COALESCE(SUM(o.montant), 0) AS total, COUNT(o.id) AS nb
-              FROM categories c
-              LEFT JOIN operations o ON o.categorie_id = c.id ${jointureSupplement}
-              GROUP BY c.id
-              ORDER BY total DESC`)
-    .all(...sousFils.args)
-    .map((r) => ({ ...r, id: Number(r.id), total: Number(r.total), nb: Number(r.nb) }));
+  const parCategorie = (await q(
+    `SELECT c.id, c.nom, c.type,
+            COALESCE(SUM(o.montant), 0) AS total, COUNT(o.id) AS nb
+     FROM categories c
+     LEFT JOIN operations o ON o.categorie_id = c.id ${jointureSupplement}
+     GROUP BY c.id
+     ORDER BY total DESC`,
+    args
+  )).map((r) => ({ ...r, id: Number(r.id), total: Number(r.total), nb: Number(r.nb) }));
 
-  const parMois = db
-    .prepare(`SELECT substr(o.date, 1, 7) AS mois,
-                     COALESCE(SUM(CASE WHEN c.type='entree'         THEN o.montant END), 0) AS entrees,
-                     COALESCE(SUM(CASE WHEN c.type='sortie'         THEN o.montant END), 0) AS sorties,
-                     COALESCE(SUM(CASE WHEN c.type='investissement' THEN o.montant END), 0) AS investissements
-              FROM operations o JOIN categories c ON c.id = o.categorie_id
-              ${clause}
-              GROUP BY mois ORDER BY mois DESC`)
-    .all(...args)
-    .map((r) => ({
-      mois: r.mois,
-      entrees: Number(r.entrees),
-      sorties: Number(r.sorties),
-      investissements: Number(r.investissements),
-      resultat: arrondi(Number(r.entrees) - Number(r.sorties)),
-      tresorerie: arrondi(Number(r.entrees) - Number(r.sorties) - Number(r.investissements)),
-    }));
+  const parMois = (await q(
+    `SELECT to_char(o.date, 'YYYY-MM') AS mois,
+            COALESCE(SUM(CASE WHEN c.type='entree'         THEN o.montant END), 0) AS entrees,
+            COALESCE(SUM(CASE WHEN c.type='sortie'         THEN o.montant END), 0) AS sorties,
+            COALESCE(SUM(CASE WHEN c.type='investissement' THEN o.montant END), 0) AS investissements
+     FROM operations o JOIN categories c ON c.id = o.categorie_id
+     ${clause}
+     GROUP BY mois ORDER BY mois DESC`,
+    args
+  )).map((r) => ({
+    mois: r.mois,
+    entrees: Number(r.entrees),
+    sorties: Number(r.sorties),
+    investissements: Number(r.investissements),
+    resultat: arrondi(Number(r.entrees) - Number(r.sorties)),
+    tresorerie: arrondi(Number(r.entrees) - Number(r.sorties) - Number(r.investissements)),
+  }));
 
-  const parJourInvestissement = db
-    .prepare(`SELECT substr(o.date, 1, 7) AS mois, COALESCE(SUM(o.montant), 0) AS total
-              FROM operations o JOIN categories c ON c.id = o.categorie_id
-              ${clause ? clause + ' AND' : 'WHERE'} c.type='investissement'
-              GROUP BY mois ORDER BY mois`)
-    .all(...args)
-    .map((r) => ({ mois: r.mois, total: Number(r.total) }));
+  const parJourInvestissement = (await q(
+    `SELECT to_char(o.date, 'YYYY-MM') AS mois, COALESCE(SUM(o.montant), 0) AS total
+     FROM operations o JOIN categories c ON c.id = o.categorie_id
+     ${clause ? clause + ' AND' : 'WHERE'} c.type='investissement'
+     GROUP BY mois ORDER BY mois`,
+    args
+  )).map((r) => ({ mois: r.mois, total: Number(r.total) }));
 
   const valeurInvestissements = parJourInvestissement.reduce((s, m) => s + m.total, 0);
 
@@ -453,14 +479,14 @@ function stats(f = {}) {
 /* Export CSV                                                          */
 /* ------------------------------------------------------------------ */
 
-function exportCsv(f = {}) {
+async function exportCsv(f = {}) {
   const echapper = (v) => {
     const s = v === null || v === undefined ? '' : String(v);
-    return /[";\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    return /[";\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
   };
   const fr = (n) => String(n).replace('.', ',');
   const entete = ['Date', 'Nature', 'Categorie', 'Montant', 'Quantite', 'Prix unitaire', 'Unite', 'Note'];
-  const lignes = listOperations(f).map((o) =>
+  const lignes = (await listOperations(f)).map((o) =>
     [o.date, LIBELLES[o.type_categorie], o.categorie, fr(o.montant),
      o.quantite === null ? '' : fr(o.quantite),
      o.prix_unitaire === null ? '' : fr(o.prix_unitaire),
@@ -473,27 +499,27 @@ function exportCsv(f = {}) {
 /* Utilisateurs et sessions                                            */
 /* ------------------------------------------------------------------ */
 
-const mapUser = (r) =>
-  r
-    ? {
-        id: Number(r.id),
-        nom: r.nom,
-        role: r.role,
-        actif: Number(r.actif) === 1,
-        cree_le: r.cree_le,
-        doit_changer_mdp: Number(r.doit_changer_mdp) === 1,
-      }
-    : null;
+const mapUser = (r) => (r ? {
+  id: Number(r.id),
+  nom: r.nom,
+  role: r.role,
+  actif: r.actif === true || Number(r.actif) === 1,
+  cree_le: r.cree_le,
+  doit_changer_mdp: r.doit_changer_mdp === true || Number(r.doit_changer_mdp) === 1,
+} : null);
 
-const listerUtilisateurs = () =>
-  db.prepare('SELECT * FROM users ORDER BY id').all().map(mapUser);
+const listerUtilisateurs = async () => (await q('SELECT * FROM users ORDER BY id')).map(mapUser);
 
-const getUtilisateur = (id) => mapUser(db.prepare('SELECT * FROM users WHERE id = ?').get(id));
+const getUtilisateur = async (id) => mapUser((await q('SELECT * FROM users WHERE id = $1', [id]))[0]);
 
-const getUtilisateurParNom = (nom) =>
-  db.prepare('SELECT * FROM users WHERE nom = ?').get(String(nom || '').trim());
+const getUtilisateurParNom = async (nom) =>
+  (await q('SELECT * FROM users WHERE nom = $1', [String(nom || '').trim()]))[0] || null;
 
-const DUREE_SESSION_JOURS = 7;
+/** Hash stocke, pour verifier un mot de passe sans l'exposer. */
+const motDePasseHache = async (id) => {
+  const [r] = await q('SELECT mot_de_passe FROM users WHERE id = $1', [id]);
+  return r ? r.mot_de_passe : null;
+};
 
 async function creerUtilisateur({ nom, mot_de_passe, role = 'saisie', actif = true, doit_changer_mdp = false }) {
   const nomPropre = String(nom || '').trim();
@@ -501,130 +527,150 @@ async function creerUtilisateur({ nom, mot_de_passe, role = 'saisie', actif = tr
   if (!['admin', 'saisie'].includes(role)) invalide("Le rôle doit être 'admin' ou 'saisie'.");
   const mdp = String(mot_de_passe || '');
   if (mdp.length < 8) invalide('Le mot de passe doit contenir au moins 8 caractères.');
-  if (getUtilisateurParNom(nomPropre)) invalide(`L'utilisateur « ${nomPropre} » existe déjà.`);
+  if (await getUtilisateurParNom(nomPropre)) invalide(`L'utilisateur « ${nomPropre} » existe déjà.`);
 
-  const nbAdmins = db.prepare("SELECT COUNT(*) AS n FROM users WHERE role='admin' AND actif=1").get();
-  const roleFinal = Number(nbAdmins.n) === 0 ? 'admin' : role;
+  // Premier compte de la base : automatiquement administrateur.
+  const [{ n }] = await q("SELECT COUNT(*) AS n FROM users WHERE role='admin' AND actif=TRUE");
+  const roleFinal = Number(n) === 0 ? 'admin' : role;
 
-  const res = await db
-    .prepare('INSERT INTO users (nom, mot_de_passe, role, actif, doit_changer_mdp) VALUES (?, ?, ?, ?, ?)')
-    .run(nomPropre, await hacherMotDePasse(mdp), roleFinal, actif ? 1 : 0, doit_changer_mdp ? 1 : 0);
-  return getUtilisateur(Number(res.lastInsertRowid));
+  const [res] = await q(
+    `INSERT INTO users (nom, mot_de_passe, role, actif, doit_changer_mdp)
+     VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+    [nomPropre, await hacherMotDePasse(mdp), roleFinal, actif, doit_changer_mdp]
+  );
+  return getUtilisateur(Number(res.id));
+}
+
+async function exigerUnAdminRestant(idExclu) {
+  const [{ n }] = await q(
+    "SELECT COUNT(*) AS n FROM users WHERE role='admin' AND actif=TRUE AND id <> $1",
+    [idExclu]
+  );
+  if (Number(n) === 0) invalide('Impossible : il doit rester au moins un administrateur actif.');
 }
 
 async function modifierUtilisateur(id, { nom, mot_de_passe, role, actif }) {
-  const u = getUtilisateur(id);
+  const u = await getUtilisateur(id);
   if (!u) invalide('Utilisateur introuvable.');
 
   if (nom !== undefined) {
     const nomPropre = String(nom).trim();
     if (!nomPropre) invalide("Le nom d'utilisateur est obligatoire.");
-    const autre = db.prepare('SELECT id FROM users WHERE nom = ? AND id <> ?').get(nomPropre, id);
-    if (autre) invalide(`L'utilisateur « ${nomPropre} » existe déjà.`);
-    db.prepare('UPDATE users SET nom = ? WHERE id = ?').run(nomPropre, id);
+    if (await getUtilisateurParNom(nomPropre)) invalide(`L'utilisateur « ${nomPropre} » existe déjà.`);
+    await q('UPDATE users SET nom = $1 WHERE id = $2', [nomPropre, id]);
   }
   if (role !== undefined) {
     if (!['admin', 'saisie'].includes(role)) invalide("Le rôle doit être 'admin' ou 'saisie'.");
     if (u.role === 'admin' && role !== 'admin') await exigerUnAdminRestant(id);
-    db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, id);
+    await q('UPDATE users SET role = $1 WHERE id = $2', [role, id]);
   }
   if (actif !== undefined) {
     if (!actif && u.role === 'admin') await exigerUnAdminRestant(id);
-    db.prepare('UPDATE users SET actif = ? WHERE id = ?').run(actif ? 1 : 0, id);
-    if (!actif) db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
+    await q('UPDATE users SET actif = $1 WHERE id = $2', [actif, id]);
+    if (!actif) await q('DELETE FROM sessions WHERE user_id = $1', [id]);
   }
   if (mot_de_passe !== undefined && String(mot_de_passe) !== '') {
     if (String(mot_de_passe).length < 8) invalide('Le mot de passe doit contenir au moins 8 caractères.');
-    db.prepare('UPDATE users SET mot_de_passe = ?, doit_changer_mdp = 0 WHERE id = ?')
-      .run(await hacherMotDePasse(String(mot_de_passe)), id);
-    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
+    await q('UPDATE users SET mot_de_passe = $1, doit_changer_mdp = FALSE WHERE id = $2',
+      [await hacherMotDePasse(String(mot_de_passe)), id]);
+    await q('DELETE FROM sessions WHERE user_id = $1', [id]);
   }
   return getUtilisateur(id);
 }
 
-async function exigerUnAdminRestant(idExclu) {
-  const autres = db.prepare("SELECT COUNT(*) AS n FROM users WHERE role='admin' AND actif=1 AND id <> ?").get(idExclu);
-  if (Number(autres.n) === 0) {
-    invalide('Impossible : il doit rester au moins un administrateur actif.');
-  }
-}
-
 async function supprimerUtilisateur(id) {
-  const u = getUtilisateur(id);
+  const u = await getUtilisateur(id);
   if (!u) invalide('Utilisateur introuvable.');
   if (u.role === 'admin') await exigerUnAdminRestant(id);
-  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
-  db.prepare('DELETE FROM users WHERE id = ?').run(id);
+  await q('DELETE FROM sessions WHERE user_id = $1', [id]);
+  await q('DELETE FROM users WHERE id = $1', [id]);
   return { supprime: true };
 }
 
-const connecter = (nom, motDePasse) =>
-  verifierUtilisateurParNom(nom, motDePasse);
+const connecter = (nom, motDePasse) => verifierUtilisateurParNom(nom, motDePasse);
 
 async function verifierUtilisateurParNom(nom, motDePasse) {
-  const ligne = getUtilisateurParNom(nom);
+  const ligne = await getUtilisateurParNom(nom);
   const mdp = String(motDePasse || '');
   if (!ligne || !mdp) {
+    // Meme cout de calcul que pour un compte existant : on ne revele pas
+    // par le temps de reponse si le nom existe ou non.
     await verifierMotDePasse(mdp || 'x', ligne ? ligne.mot_de_passe : 'scrypt$16384$8$1$AAAA$AAAA');
     return null;
   }
-  const ok = await verifierMotDePasse(mdp, ligne.mot_de_passe);
-  if (!ok) return null;
-  if (Number(ligne.actif) !== 1) return null;
+  if (!(await verifierMotDePasse(mdp, ligne.mot_de_passe))) return null;
+  if (ligne.actif === false || Number(ligne.actif) === 0) return null;
   return mapUser(ligne);
 }
 
-function creerSession(userId) {
+async function creerSession(userId) {
   const jeton = crypto.randomBytes(32).toString('base64url');
   const csrf = crypto.randomBytes(24).toString('base64url');
   const expire = new Date(Date.now() + DUREE_SESSION_JOURS * 864e5);
-  db.prepare('INSERT INTO sessions (token_hash, user_id, csrf, expire_le) VALUES (?, ?, ?, ?)')
-    .run(hacherJeton(jeton), userId, csrf, expire.toISOString());
+  await q(
+    'INSERT INTO sessions (token_hash, user_id, csrf, expire_le) VALUES ($1,$2,$3,$4)',
+    [hacherJeton(jeton), userId, csrf, expire.toISOString()]
+  );
   return { jeton, csrf, expire };
 }
 
-function lireSession(jeton) {
+async function lireSession(jeton) {
   if (!jeton) return null;
-  const ligne = db.prepare(
+  const [l] = await q(
     `SELECT s.token_hash, s.csrf, s.expire_le, u.id, u.nom, u.role, u.actif
      FROM sessions s JOIN users u ON u.id = s.user_id
-     WHERE s.token_hash = ?`
-  ).get(hacherJeton(jeton));
-  if (!ligne) return null;
-  if (new Date(ligne.expire_le) < new Date()) {
-    db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(ligne.token_hash);
+     WHERE s.token_hash = $1`,
+    [hacherJeton(jeton)]
+  );
+  if (!l) return null;
+  if (new Date(l.expire_le) < new Date()) {
+    await q('DELETE FROM sessions WHERE token_hash = $1', [l.token_hash]);
     return null;
   }
-  if (Number(ligne.actif) !== 1) {
-    db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(ligne.token_hash);
+  if (l.actif === false) {
+    await q('DELETE FROM sessions WHERE token_hash = $1', [l.token_hash]);
     return null;
   }
-  return { id: Number(ligne.id), nom: ligne.nom, role: ligne.role, csrf: ligne.csrf, expire: ligne.expire_le };
+  return { id: Number(l.id), nom: l.nom, role: l.role, csrf: l.csrf, expire: l.expire_le };
 }
 
-const supprimerSession = (jeton) => {
-  if (jeton) db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(hacherJeton(jeton));
+const supprimerSession = async (jeton) => {
+  if (!jeton) return;
+  await q('DELETE FROM sessions WHERE token_hash = $1', [hacherJeton(jeton)]);
 };
 
-const supprimerSessionsUtilisateur = (userId) =>
-  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
+const supprimerSessionsUtilisateur = async (userId) => {
+  await q('DELETE FROM sessions WHERE user_id = $1', [userId]);
+};
 
-function nettoyerSessionsExpirees() {
-  const r = db.prepare("DELETE FROM sessions WHERE expire_le < datetime('now')").run();
-  return Number(r.changes || 0);
+async function nettoyerSessionsExpirees() {
+  const r = await pool.query('DELETE FROM sessions WHERE expire_le < NOW()');
+  return r.rowCount || 0;
 }
 
-function compterUtilisateurs() {
-  return Number(db.prepare('SELECT COUNT(*) AS n FROM users').get().n);
-}
+const compterUtilisateurs = async () => Number((await q('SELECT COUNT(*) AS n FROM users'))[0].n);
+
+/** Description de la base, pour l'ecran de sauvegarde. */
+const listerOperationsBrutes = async () => (await q('SELECT * FROM operations ORDER BY id')).map(mapOp);
+
+const descriptionBase = () => {
+  try {
+    const h = new URL(process.env.DATABASE_URL || '').hostname;
+    return h;
+  } catch {
+    return 'postgresql';
+  }
+};
 
 module.exports = {
-  db, DB_PATH, TYPES, LIBELLES, DUREE_SESSION_JOURS,
+  TYPES, LIBELLES, DUREE_SESSION_JOURS,
   hacherMotDePasse, verifierMotDePasse,
   listCategories, getCategorie, createCategorie, updateCategorie, deleteCategorie,
   listOperations, getOperation, createOperation, updateOperation, deleteOperation,
+  compterOperations, listerOperationsBrutes, descriptionBase,
   stats, exportCsv,
-  listerUtilisateurs, getUtilisateur, creerUtilisateur, modifierUtilisateur,
-  supprimerUtilisateur, supprimerSessionsUtilisateur, connecter, creerSession,
-  lireSession, supprimerSession, nettoyerSessionsExpirees, compterUtilisateurs,
+  listerUtilisateurs, getUtilisateur, getUtilisateurParNom, motDePasseHache,
+  creerUtilisateur, modifierUtilisateur, supprimerUtilisateur, supprimerSessionsUtilisateur,
+  connecter, creerSession, lireSession, supprimerSession, nettoyerSessionsExpirees,
+  compterUtilisateurs, init, fermer, ensureDefaultCategories,
 };

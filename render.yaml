@@ -1,0 +1,37 @@
+# Configuration Render (https://render.com).
+# L'application est un service Node qui se connecte a une base Neon externe.
+#
+# Creer la base sur neon.tech, puis dans Render :
+#   Environment > Add > Secret  ->  DATABASE_URL  =  chaine de connexion Neon
+# Render lit ce fichier automatiquement si vous choisissez "New > Blueprint".
+
+services:
+  - type: web
+    name: soft-comptabilite
+    runtime: node
+    plan: free
+    region: frankfurt
+    branch: main
+    buildCommand: npm ci --omit=dev
+    startCommand: node server.js
+    healthCheckPath: /api/sante
+    autoDeploy: true
+    envVars:
+      # Version Node identique a celle testee en developpement.
+      - key: NODE_VERSION
+        value: "24.0.0"
+      - key: NODE_ENV
+        value: production
+      - key: HOST
+        value: 0.0.0.0
+      # Render fournit PORT automatiquement : ne pas le definir ici.
+      # Collez la chaine "pooled" fournie par Neon (elle contient sslmode=require).
+      - key: DATABASE_URL
+        sync: false
+      # Identifiant du premier administrateur, uniquement utilise au tout premier
+      # demarrage sur une base vide. Retirez ensuite ADMIN_PASSWORD : le compte
+      # s'authentifie desormais par sa base.
+      - key: ADMIN_USER
+        value: admin
+      - key: ADMIN_PASSWORD
+        generateValue: true

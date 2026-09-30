@@ -120,13 +120,20 @@ const cookieVide = (req) => cookieSession('', 0, req);
 /* Session et acces                                                   */
 /* ------------------------------------------------------------------ */
 
-function session(req) {
-  if (!req._session) req._session = db.lireSession(parserCookies(req)[COOKIE]) || null;
-  return req._session;
+async function session(req) {
+  if (req._session !== undefined) return req._session;
+  try {
+    const s = await db.lireSession(parserCookies(req)[COOKIE]);
+    req._session = s || null;
+    return req._session;
+  } catch {
+    req._session = null;
+    return null;
+  }
 }
 
-const estConnecte = (req) => session(req) !== null;
-const estAdmin = (req) => session(req)?.role === 'admin';
+const estConnecte = async (req) => (await session(req)) !== null;
+const estAdmin = async (req) => (await session(req))?.role === 'admin';
 
 /* ------------------------------------------------------------------ */
 /* Acces aux operations : qui peut faire quoi                          */
@@ -142,8 +149,8 @@ const DROITS = {
   'stats:lire': () => true,
 };
 
-function aLeDroit(req, droit) {
-  const s = session(req);
+async function aLeDroit(req, droit) {
+  const s = await session(req);
   const test = DROITS[droit];
   return !!test && test(s);
 }
@@ -154,16 +161,17 @@ const METHODES_ECRITURE = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
  * Verifie l'authentification, le role et le jeton CSRF.
  * Renvoie { code, erreur } en cas de refus, sinon null.
  */
-function verifierAcces(req, droit) {
-  if (!estConnecte(req)) {
+async function verifierAcces(req, droit) {
+  if (!(await estConnecte(req))) {
     return { code: 401, erreur: 'Authentification requise.' };
   }
-  if (!aLeDroit(req, droit)) {
+  if (!(await aLeDroit(req, droit))) {
     return { code: 403, erreur: "Droits insuffisants : cette action est réservée à un administrateur." };
   }
   if (METHODES_ECRITURE.has(req.method)) {
     const fourni = req.headers['x-csrf-token'];
-    const attendu = session(req).csrf;
+    const s = await session(req);
+    const attendu = s.csrf;
     if (typeof fourni !== 'string' || fourni.length !== attendu.length ||
         !crypto.timingSafeEqual(Buffer.from(fourni), Buffer.from(attendu))) {
       return { code: 403, erreur: 'Jeton CSRF invalide. Rechargez la page.' };
