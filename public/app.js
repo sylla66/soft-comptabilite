@@ -21,6 +21,7 @@ let categories = [];
 let utilisateur = null;
 let csrf = null;
 let vueCourante = 'journal';
+let operationsCourantes = [];
 
 /* ================================================================== */
 /* Reseau                                                              */
@@ -152,7 +153,11 @@ async function demarrerApplication() {
 
   await chargerCategories();
   await reinitialiserFormulaire();
-  await rafraichirVue();
+  // On passe par afficherVue et pas rafraichirVue : au demarrage, la vue
+  // courante vaut 'connexion' (c'est l'ecran affiche avant la connexion), et
+  // rafraichirVue ne chargerait donc aucune donnee - le journal resterait vide
+  // tant que l'utilisateur n'aurait pas clique sur un onglet.
+  await afficherVue('journal');
 }
 
 /* ================================================================== */
@@ -215,7 +220,7 @@ function afficherVue(nom) {
   $$('.onglet').forEach((b) => b.classList.toggle('actif', b.dataset.vue === nom));
   $$('.vue').forEach((v) => v.classList.add('cache'));
   $(`#vue-${nom}`).classList.remove('cache');
-  rafraichirVue();
+  return rafraichirVue();
 }
 
 function rafraichirVue() {
@@ -240,7 +245,7 @@ async function chargerCategories() {
     for (const nature of ['entree', 'sortie', 'investissement']) {
       const groupe = document.createElement('optgroup');
       groupe.label = NATURES[nature].label + (nature === 'investissement' ? ' (biens durables)' : nature === 'entree' ? 's (recettes)' : 's (dépenses)');
-      for (const c of categories.filter((x) => x.type === nature)) groupe.add(new Option(c.nom, c.id));
+        for (const c of categories.filter((x) => x.type === nature)) groupe.append(new Option(c.nom, c.id));
       sel.append(groupe);
     }
     if (actuel) sel.value = actuel;
@@ -383,7 +388,7 @@ function htmlOperation(op) {
     <td style="white-space:nowrap">${op.date.split('-').reverse().join('/')}</td>
     <td><span class="etiquette ${op.type_categorie}">${n.label}</span></td>
     <td><strong>${echapper(op.categorie)}</strong></td>
-    <td class="detail-txt">${echapper(detail)}</td>
+    <td class="detail-txt col-secondaire">${echapper(detail)}</td>
     <td class="num ${n.classe}">${signe} ${argent(op.montant)}</td>
     <td class="actions">
       <a class="lien link-accent" data-act="edit">Modifier</a>
@@ -395,6 +400,7 @@ function htmlOperation(op) {
 async function chargerJournal() {
   const f = filtresCourants();
   const ops = await api('/api/operations?' + qs(f));
+  operationsCourantes = ops;
   const body = $('#table-op tbody');
   body.innerHTML = ops.map(htmlOperation).join('');
   $('#nb-op').textContent = ops.length;
@@ -429,12 +435,15 @@ $('#table-op tbody').addEventListener('click', async (e) => {
   const lien = e.target.closest('a[data-act]');
   if (!lien) return;
   const id = Number(lien.closest('tr').dataset.id);
-  const op = await api('/api/operations/' + id).catch(() => null);
-  if (!op) return toast('Opération introuvable.', 'erreur');
+  const op = operationsCourantes.find((o) => o.id === id);
 
-  if (lien.dataset.act === 'edit') return modifierOperation(op);
+  if (lien.dataset.act === 'edit') {
+    if (!op) return toast('Opération introuvable.', 'erreur');
+    return modifierOperation(op);
+  }
   if (lien.dataset.act === 'del') {
-    if (!confirm(`Supprimer définitivement cette opération ?\n\n${op.date} — ${op.categorie} — ${argent(op.montant)}`)) return;
+    const details = op ? `\n\n${op.date} — ${op.categorie} — ${argent(op.montant)}` : '';
+    if (!confirm(`Supprimer définitivement cette opération ?${details}`)) return;
     await api('/api/operations/' + id, { method: 'DELETE' });
     toast('Opération supprimée.');
     if ($('#op-id').value === String(id)) await reinitialiserFormulaire();
@@ -526,7 +535,7 @@ async function chargerCategoriesVue() {
     <tr data-id="${c.id}">
       <td><strong>${echapper(c.nom)}</strong></td>
       <td><span class="etiquette ${c.type}">${NATURES[c.type].label}</span></td>
-      <td class="detail-txt">${echapper(c.unite || '—')}</td>
+      <td class="detail-txt col-secondaire">${echapper(c.unite || '—')}</td>
       <td class="num">${compte[c.id] || 0}</td>
       <td class="actions">
         <a class="lien link-accent" data-act="edit">Modifier</a>
@@ -596,7 +605,7 @@ async function chargerUtilisateurs() {
       <td><strong>${echapper(u.nom)}</strong>${u.id === utilisateur.id ? ' <span class="detail-txt">(vous)</span>' : ''}</td>
       <td class="${u.role === 'admin' ? 'entree-txt' : ''}">${u.role === 'admin' ? 'Administrateur' : 'Saisie'}</td>
       <td>${u.actif ? '<span class="etiquette entree">Actif</span>' : '<span class="etiquette sortie">Désactivé</span>'}</td>
-      <td class="detail-txt">${echapper((u.cree_le || '').slice(0, 10))}</td>
+      <td class="detail-txt col-secondaire">${echapper((u.cree_le || '').slice(0, 10))}</td>
       <td class="actions">
         <a class="lien link-accent" data-act="edit">Modifier</a>
         ${u.id === utilisateur.id ? '' : '<a class="lien link-danger" data-act="del">Supprimer</a>'}

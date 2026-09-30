@@ -1,73 +1,143 @@
 :root {
-  --bleu: #0e7490;
-  --bleu-clair: #06b6d4;
-  --vert: #059669;
-  --rouge: #dc2626;
-  --orange: #ea580c;
-  --violet: #7c3aed;
+  --bleu: #0f766e;
+  --bleu-clair: #67e8f9;
+  --vert: #10b981;
+  --rouge: #ef4444;
+  --orange: #f59e0b;
+  --violet: #8b5cf6;
   --gris: #64748b;
-  --fond: #f1f5f9;
-  --carte: #ffffff;
+  --fond: #eef6ff;
+  --fond-2: #f8fafc;
+  --carte: rgba(255, 255, 255, 0.92);
   --texte: #0f172a;
-  --bord: #e2e8f0;
-  --ombre: 0 1px 3px rgba(15, 23, 42, .08), 0 1px 2px rgba(15, 23, 42, .04);
-  --rayon: 12px;
+  --texte-doux: #475569;
+  --bord: #dfeaf5;
+  --bord-fort: #cbd5e1;
+  --ombre: 0 16px 38px rgba(15, 23, 42, .08), 0 6px 18px rgba(15, 23, 42, .04);
+  --rayon: 16px;
+  /* Cible tactile : 44 px est la taille recommandee sur mobile. */
+  --cible: 44px;
+  --transition: .18s cubic-bezier(.4, 0, .2, 1);
 }
 
 * { box-sizing: border-box; }
 
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+
 body {
   margin: 0;
   font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
-  background: var(--fond);
+  background:
+    radial-gradient(850px 420px at -10% -10%, rgba(103, 232, 249, .38), transparent 40%),
+    linear-gradient(180deg, #eef8ff 0%, #f8fafc 35%, #f1f5f9 100%);
   color: var(--texte);
   font-size: 15px;
   line-height: 1.5;
+  /* Evite le rebond arriere qui fait reapparaitre la page en blanc
+     lorsqu'on fait glisser horizontalement sur mobile. */
+  overscroll-behavior-y: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
-h1, h2 { margin: 0; font-weight: 650; }
-h2 { font-size: 1.02rem; margin-bottom: 1rem; }
+h1, h2 { margin: 0; font-weight: 700; text-wrap: balance; }
+h2 { font-size: 1.05rem; margin-bottom: 1rem; }
 
 .cache { display: none !important; }
 
+/* ---------- Focus visible ----------
+   On ne montre l'anneau que pour la navigation au clavier : au doigt ou a la
+   souris il reste invisible, mais il reapparait pour les lecteurs d'ecran. */
+:focus-visible {
+  outline: 3px solid var(--bleu);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* Respecte le contraste force des systemes d'accessibilite : les degrades
+   et les couleurs de fond decoratives sont neutralises. */
+@media (forced-colors: active) {
+  .carte, .kpi, .filtres, .puce, .topbar { border: 1px solid CanvasText; }
+  .onglet.actif, .opt input:checked + span { forced-color-adjust: none; }
+}
+
 /* ---------- Barre du haut ---------- */
 .topbar {
-  background: linear-gradient(100deg, #0c4a6e, #0891b2);
+  background: linear-gradient(115deg, #0f172a 0%, #0c4a6e 30%, #0f766e 100%);
   color: #fff;
-  padding: .9rem 1.5rem;
+  padding: .95rem 1.5rem;
+  /* Marge haute = encoche de l'iPhone, sinon le logo passe dessous. */
+  padding-top: max(.95rem, env(safe-area-inset-top));
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
   flex-wrap: wrap;
-  box-shadow: 0 2px 8px rgba(12, 74, 110, .25);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, .16);
+  /* Liseré coloré qui marque la séparation avec le contenu. */
+  border-bottom: 3px solid rgba(103, 232, 249, .5);
 }
-.marque { display: flex; align-items: center; gap: .75rem; }
-.logo { font-size: 2rem; line-height: 1; }
+.marque {
+  display: flex; align-items: center; gap: .75rem;
+  flex: 1 1 260px; min-width: 0;
+}
+.logo {
+  font-size: 2.1rem; line-height: 1; flex-shrink: 0;
+  filter: drop-shadow(0 8px 16px rgba(14, 116, 110, .35));
+  transition: transform var(--transition);
+}
+.marque:hover .logo { transform: scale(1.06) rotate(-4deg); }
 .topbar h1 { font-size: 1.2rem; letter-spacing: .2px; }
-.topbar p { margin: 0; font-size: .78rem; opacity: .85; }
+.topbar p { margin: 0; font-size: .78rem; opacity: .9; }
+.topbar h1, .topbar p { overflow-wrap: anywhere; }
 
-.onglets { display: flex; gap: .35rem; background: rgba(255, 255, 255, .14); padding: .25rem; border-radius: 10px; }
-.onglet {
-  border: 0; background: transparent; color: #fff;
-  padding: .5rem .95rem; border-radius: 8px; cursor: pointer;
-  font-size: .87rem; font-weight: 600; font-family: inherit;
-  transition: background .15s;
+.onglets {
+  display: flex; gap: .35rem; background: rgba(255, 255, 255, .1);
+  padding: .28rem; border-radius: 14px; border: 1px solid rgba(255,255,255,.18);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 8px 20px rgba(15, 23, 42, .08);
+  /* `scroll-snap` : le tactile fait deslisser onglet par onglet. */
+  scroll-snap-type: x proximity;
+  overscroll-behavior-x: contain;
 }
-.onglet:hover { background: rgba(255, 255, 255, .14); }
-.onglet.actif { background: #fff; color: #0c4a6e; }
+.onglet {
+  border: 0; background: transparent; color: rgba(255,255,255,.9);
+  padding: .55rem .95rem; border-radius: 10px; cursor: pointer;
+  font-size: .87rem; font-weight: 700; font-family: inherit;
+  transition: all var(--transition);
+  letter-spacing: .02em;
+  white-space: nowrap;
+  scroll-snap-align: center;
+}
+.onglet:hover { background: rgba(255, 255, 255, .12); }
+/* Etat actif appuye au doigt, pour le retour tactile. */
+.onglet:active { transform: scale(.97); }
+.onglet.actif {
+  background: linear-gradient(180deg, #ffffff, #e2f3ff); color: #0c4a6e;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, .12);
+}
 
-.haut-droite { display: flex; align-items: center; gap: .9rem; flex-wrap: wrap; }
+.haut-droite {
+  display: flex; align-items: center; gap: .9rem; flex-wrap: wrap;
+  justify-content: flex-end; flex: 1 1 auto; min-width: 0;
+}
 .menu-utilisateur {
   display: flex; align-items: center; gap: .6rem;
-  background: rgba(0, 0, 0, .16); padding: .3rem .3rem .3rem .8rem; border-radius: 10px;
+  background: rgba(15, 23, 42, .12); padding: .32rem .32rem .32rem .8rem; border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.12);
+  flex-shrink: 0;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.06);
 }
-.menu-utilisateur .qui { font-size: .82rem; font-weight: 600; }
-.menu-utilisateur .btn-fantome { background: rgba(255, 255, 255, .95); border: 0; padding: .35rem .7rem; font-size: .8rem; }
+.menu-utilisateur .qui { font-size: .82rem; font-weight: 700; }
+.menu-utilisateur .btn-fantome {
+  background: linear-gradient(180deg, #ffffff, #eaf6ff); border: 0; padding: .38rem .7rem; font-size: .8rem;
+  color: var(--texte); box-shadow: 0 6px 12px rgba(15,23,42,.08); border-radius: 9px;
+}
 
 /* ---------- Connexion ---------- */
 .ecran-connexion {
-  min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  /* dvh = hauteur reelle de la fenetre : evite que le bas du formulaire soit
+     masque par la barre d'adresse des navigateurs de telephone. */
+  min-height: 100vh; min-height: 100dvh;
+  display: flex; align-items: center; justify-content: center;
   padding: 1.5rem;
   background: linear-gradient(140deg, #0c4a6e, #0891b2 60%, #06b6d4);
 }
@@ -122,14 +192,22 @@ h2 { font-size: 1.02rem; margin-bottom: 1rem; }
 .roue { width: 34px; height: 34px; border: 3px solid var(--bord); border-top-color: var(--bleu); border-radius: 50%; animation: tourne .8s linear infinite; }
 @keyframes tourne { to { transform: rotate(360deg); } }
 
-main { padding: 1.25rem; max-width: 1500px; margin: 0 auto; }
+main {
+  padding: clamp(.9rem, 2vw, 1.5rem);
+  max-width: 1500px;
+  margin: 0 auto;
+  width: min(100%, 1500px);
+}
 
 /* ---------- Filtres ---------- */
 .filtres {
-  background: var(--carte); border: 1px solid var(--bord);
-  border-radius: var(--rayon); padding: .9rem 1.1rem;
+  background: rgba(255,255,255,.82);
+  border: 1px solid var(--bord);
+  border-radius: var(--rayon);
+  padding: .9rem 1.1rem;
   display: flex; gap: 1rem; align-items: flex-end; flex-wrap: wrap;
   box-shadow: var(--ombre); margin-bottom: 1rem;
+  backdrop-filter: blur(4px);
 }
 .filtres label { display: flex; flex-direction: column; gap: .3rem; font-size: .74rem; font-weight: 700; text-transform: uppercase; letter-spacing: .4px; color: var(--gris); }
 .plage { display: flex; align-items: center; gap: .4rem; }
@@ -138,27 +216,52 @@ main { padding: 1.25rem; max-width: 1500px; margin: 0 auto; }
 
 input, select, textarea {
   font-family: inherit; font-size: .9rem; color: var(--texte);
-  padding: .5rem .6rem; border: 1px solid var(--bord);
-  border-radius: 8px; background: #fff; min-width: 0;
+  padding: .58rem .72rem; border: 1px solid var(--bord);
+  border-radius: 10px; background: #fff; min-width: 0;
+  transition: border-color var(--transition), box-shadow var(--transition), transform var(--transition);
 }
-input:focus, select:focus { outline: 2px solid var(--bleu-clair); outline-offset: -1px; border-color: var(--bleu-clair); }
+/* Les champs numeriques gardent leur couleur d'accent native (case a
+   cocher, bouton radio) au lieu du bleu par defaut du systeme. */
+input[type=checkbox], input[type=radio] { accent-color: var(--bleu); }
+input:focus, select:focus, textarea:focus {
+  outline: none; border-color: var(--bleu); box-shadow: 0 0 0 3px rgba(15, 118, 110, .12);
+}
+input:disabled, select:disabled, textarea:disabled {
+  background: #f1f5f9; color: var(--gris); cursor: not-allowed;
+}
 select { cursor: pointer; }
+
+/* Placeholder plus lisible qu'en gris clair par defaut. */
+::placeholder { color: #94a3b8; opacity: 1; }
 
 /* ---------- Boutons ---------- */
 .btn-principal {
-  background: var(--bleu); color: #fff; border: 0; cursor: pointer;
-  padding: .6rem 1.1rem; border-radius: 8px; font-weight: 650;
-  font-family: inherit; font-size: .9rem; transition: background .15s;
+  background: linear-gradient(135deg, var(--bleu), #0b5e75);
+  color: #fff; border: 0; cursor: pointer;
+  padding: .65rem 1.1rem; border-radius: 10px; font-weight: 700;
+  font-family: inherit; font-size: .9rem;
+  transition: transform var(--transition), box-shadow var(--transition), filter var(--transition);
+  box-shadow: 0 12px 24px rgba(15, 118, 110, .18);
+  /* Evite l'effet de surbrillance bleue au tapotement sur mobile. */
+  -webkit-tap-highlight-color: transparent;
 }
-.btn-principal:hover { background: #0b5e75; }
+.btn-principal:hover {
+  transform: translateY(-1px); box-shadow: 0 14px 26px rgba(15, 118, 110, .22); filter: saturate(1.04);
+}
+.btn-principal:active { transform: translateY(0) scale(.985); }
 
 .btn-fantome {
-  background: #fff; color: var(--texte); border: 1px solid var(--bord);
-  cursor: pointer; padding: .5rem .85rem; border-radius: 8px;
+  background: rgba(255,255,255,.8); color: var(--texte); border: 1px solid var(--bord);
+  cursor: pointer; padding: .55rem .85rem; border-radius: 10px;
   font-family: inherit; font-size: .85rem; font-weight: 600;
-  text-decoration: none; display: inline-block; transition: background .15s;
+  text-decoration: none; display: inline-block;
+  transition: all var(--transition);
+  -webkit-tap-highlight-color: transparent;
 }
-.btn-fantome:hover { background: #f8fafc; border-color: #cbd5e1; }
+.btn-fantome:hover { background: #f8fafc; border-color: var(--bord-fort); transform: translateY(-1px); }
+.btn-fantome:active { transform: translateY(0) scale(.985); }
+/* Les deux boutons partagent le meme feedback d'appui. */
+.btn-principal:active, .btn-fantome:active { filter: brightness(.96); }
 
 .link-danger { color: var(--rouge); }
 .link-accent  { color: var(--bleu); }
@@ -177,16 +280,18 @@ select { cursor: pointer; }
 .puce.resultat{ color: var(--bleu); border-color: #bae6fd; background: #f0f9ff; }
 
 /* ---------- Grille ---------- */
-.grille { display: grid; grid-template-columns: 340px 1fr; gap: 1rem; align-items: start; }
+.grille { display: grid; grid-template-columns: minmax(280px, 340px) minmax(0, 1fr); gap: 1rem; align-items: start; }
 .grille-bilan { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem; }
 
 .carte {
-  background: var(--carte); border: 1px solid var(--bord);
+  background: linear-gradient(180deg, rgba(255,255,255,.98), rgba(248,250,252,.96)); border: 1px solid var(--bord);
   border-radius: var(--rayon); padding: 1.1rem; box-shadow: var(--ombre);
 }
 
 /* ---------- Formulaire ---------- */
-.saisie { position: sticky; top: 1rem; }
+/* `scroll-margin` : quand on valide une operation en bas d'une fiche
+   collee, le navigateur ne la cache pas sous la barre du haut. */
+.saisie { position: sticky; top: 1rem; scroll-margin-top: 1rem; }
 .champ { margin-bottom: .85rem; }
 .champ > label { display: block; font-size: .76rem; font-weight: 700; text-transform: uppercase; letter-spacing: .4px; color: var(--gris); margin-bottom: .3rem; }
 .champ input, .champ select { width: 100%; }
@@ -221,23 +326,41 @@ select { cursor: pointer; }
 /* ---------- Tableau ---------- */
 .entete-liste { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-bottom: .8rem; }
 .entete-liste h2 { margin: 0; }
-.badge { background: var(--bleu); color: #fff; border-radius: 10px; padding: .05rem .5rem; font-size: .78rem; }
+.badge { background: linear-gradient(135deg, var(--bleu), #0b5e75); color: #fff; border-radius: 10px; padding: .1rem .55rem; font-size: .78rem; box-shadow: 0 10px 20px rgba(15,118,110,.18); }
 .mini-resume { font-size: .82rem; color: var(--gris); font-weight: 600; display: flex; gap: .8rem; flex-wrap: wrap; }
 
-.tableau-defilant { max-height: 68vh; overflow: auto; }
+.tableau-defilant {
+  max-height: 68vh; overflow: auto; border: 1px solid var(--bord); border-radius: 12px; background: rgba(255,255,255,.72);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.7);
+  /* Empeche le defilement en cascade vers la page quand on arrive en bas
+     du tableau au doigt : la liste s'arrete sur elle-meme. */
+  overscroll-behavior: contain;
+  scrollbar-color: #cbd5e1 transparent;
+}
 .tableau-defilant.court { max-height: 380px; }
 table { width: 100%; border-collapse: collapse; font-size: .88rem; }
 thead th {
-  position: sticky; top: 0; background: var(--carte); z-index: 1;
+  position: sticky; top: 0;
+  background: linear-gradient(180deg, #f8fafc, #edf5ff); z-index: 1;
   text-align: left; font-size: .72rem; text-transform: uppercase;
   letter-spacing: .4px; color: var(--gris); font-weight: 700;
-  padding: .5rem .5rem; border-bottom: 2px solid var(--bord);
+  padding: .55rem .5rem; border-bottom: 2px solid var(--bord);
+  white-space: nowrap;
 }
-tbody td { padding: .5rem; border-bottom: 1px solid #f1f5f9; vertical-align: top; }
-tbody tr:hover { background: #f8fafc; }
+tbody td { padding: .52rem .5rem; border-bottom: 1px solid #edf2f7; vertical-align: top; }
+/* Lignes alternees : on lit un tableau de depenses beaucoup plus vite
+   quand l'oeil peut suivre une ligne sur deux. */
+tbody tr:nth-child(even) { background: rgba(241, 245, 249, .5); }
+tbody tr:hover { background: linear-gradient(90deg, rgba(14, 165, 233, .09), rgba(255,255,255,0)); }
+tbody tr:last-child td { border-bottom: 0; }
 .num { text-align: right; font-variant-numeric: tabular-nums; }
 .actions { text-align: right; white-space: nowrap; width: 1%; }
-td .lien { cursor: pointer; font-weight: 600; font-size: .82rem; text-decoration: none; }
+td .lien {
+  cursor: pointer; font-weight: 600; font-size: .82rem; text-decoration: none;
+  /* Zone tactile comfortable sans changer l'apparence du texte. */
+  display: inline-block; padding: .35rem .1rem;
+  transition: color var(--transition);
+}
 td .lien:hover { text-decoration: underline; }
 
 .entree-txt { color: var(--vert); font-weight: 700; }
@@ -251,7 +374,10 @@ td .lien:hover { text-decoration: underline; }
 .kpi {
   background: var(--carte); border: 1px solid var(--bord); border-left: 4px solid var(--gris);
   border-radius: var(--rayon); padding: 1rem 1.2rem; box-shadow: var(--ombre);
+  transition: transform var(--transition), box-shadow var(--transition);
 }
+/* Leger soulèvement au survol : donne du relief aux trois montants cles. */
+.kpi:hover { transform: translateY(-2px); box-shadow: 0 20px 44px rgba(15, 23, 42, .12); }
 .kpi.entree { border-left-color: var(--vert); }
 .kpi.sortie { border-left-color: var(--rouge); }
 .kpi.resultat { border-left-color: var(--bleu); }
@@ -264,10 +390,13 @@ td .lien:hover { text-decoration: underline; }
 
 /* ---------- Barres catégories ---------- */
 .barre-ligne { margin-bottom: .85rem; }
-.barre-tete { display: flex; justify-content: space-between; font-size: .85rem; font-weight: 600; margin-bottom: .25rem; }
-.barre-tete .mont { font-variant-numeric: tabular-nums; }
+.barre-tete { display: flex; justify-content: space-between; font-size: .85rem; font-weight: 600; margin-bottom: .25rem; gap: .5rem; }
+.barre-tete .mont { font-variant-numeric: tabular-nums; flex-shrink: 0; }
 .barre-piste { height: 9px; background: #f1f5f9; border-radius: 6px; overflow: hidden; }
-.barre-part { height: 100%; border-radius: 6px; background: var(--bleu-clair); }
+.barre-part {
+  height: 100%; border-radius: 6px; background: var(--bleu-clair);
+  width: 0; transition: width .6s cubic-bezier(.4, 0, .2, 1);
+}
 .barre-part.entree { background: var(--vert); }
 .barre-part.sortie { background: var(--orange); }
 .barre-meta { font-size: .75rem; color: var(--gris); }
@@ -277,14 +406,191 @@ td .lien:hover { text-decoration: underline; }
   position: fixed; bottom: 1.25rem; left: 50%; transform: translateX(-50%) translateY(120%);
   background: #0f172a; color: #fff; padding: .7rem 1.2rem; border-radius: 8px;
   font-size: .88rem; font-weight: 600; box-shadow: 0 8px 24px rgba(0, 0, 0, .25);
-  transition: transform .25s ease; z-index: 99; max-width: 90vw;
+  transition: transform .25s ease, opacity .25s ease;
+  z-index: 99; max-width: min(90vw, 460px); text-align: center;
+  /* Au-dessus de la barre d'Accueil du telephone. */
+  bottom: max(1.25rem, calc(env(safe-area-inset-bottom) + 1rem));
+  /* L'ombre suit le message pour le detacher du contenu. */
+  border: 1px solid rgba(255, 255, 255, .12);
 }
 .toast.visible { transform: translateX(-50%) translateY(0); }
 .toast.erreur { background: var(--rouge); }
 .toast.succes { background: var(--vert); }
 
+/* ================================================================
+   Adaptation aux telephones
+   Ajoutee apres coup : sur un ecran de 360 px, plusieurs elements
+   (barre d'onglets, colonnes de tableau, champs du formulaire)
+   debordaient et provoquaient un defilement horizontal.
+   ================================================================ */
+
+/* Empeche tout debordement horizontal de la page, quelle que soit
+   la largeur. `overflow-x: clip` ne cree pas de contexte de defilement
+   (contrairement a `hidden`) et n'empeche donc pas le `position: sticky`. */
+html, body { max-width: 100%; overflow-x: clip; }
+
+/* Les longs textes (notes, noms de categories) doivent passer a la ligne
+   plutot que d'élargir le tableau. */
+td, th, .kpi, .entete-liste { overflow-wrap: anywhere; }
+
 @media (max-width: 1000px) {
-  .grille, .grille-bilan { grid-template-columns: 1fr; }
-  .cartes-kpi { grid-template-columns: 1fr; }
+  /* `1fr` seul equivaut a `minmax(auto, 1fr)` : la colonne ne peut alors pas
+     descendre sous la largeur intrinsèque de son contenu, et la fiche de
+     saisie finit par depasser l'ecran. `minmax(0, 1fr)` supprime ce plancher
+     et laisse la colonne suivre la largeur disponible. */
+  .grille, .grille-bilan { grid-template-columns: minmax(0, 1fr); }
+  .cartes-kpi { grid-template-columns: minmax(0, 1fr); }
   .saisie { position: static; }
+  /* La fiche ne doit pas non plus dicter sa largeur : sans cela, un
+     sous-element large (bascules, champs dates) la pousse hors cadre. */
+  .grille > *, .saisie, .carte { min-width: 0; }
+}
+
+/* ---------- Tablette : deux colonnes KPI ---------- */
+@media (min-width: 620px) and (max-width: 1000px) {
+  .cartes-kpi { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ---------- Telephone large ---------- */
+@media (max-width: 760px) {
+  body { font-size: 14.5px; }
+
+  main { padding: .85rem .8rem 2rem; }
+
+  .topbar { padding: .7rem .85rem; gap: .6rem; }
+  .topbar h1 { font-size: 1.05rem; }
+  .topbar p { display: none; }
+  .logo { font-size: 1.5rem; }
+  .marque { flex: 1 1 100%; }
+
+  .haut-droite {
+    width: 100%; justify-content: space-between; gap: .5rem; margin-top: .15rem;
+  }
+
+  .onglets {
+    flex: 1 1 100%; width: 100%; order: 3; overflow-x: auto; overflow-y: hidden;
+    -webkit-overflow-scrolling: touch; scrollbar-width: none;
+    -ms-overflow-style: none;
+    /* Le geste de defilement ne doit pas entrainer la page. */
+    overscroll-behavior-x: contain;
+  }
+  .onglets::-webkit-scrollbar { display: none; }
+  .onglet {
+    flex: 1 0 auto; white-space: nowrap; text-align: center;
+    /* 44 px : taille d'appui confortable au doigt. */
+    min-height: var(--cible);
+    padding: .6rem .9rem; font-size: .85rem;
+  }
+
+  .menu-utilisateur { padding: .25rem .25rem .25rem .6rem; }
+  .menu-utilisateur .qui { font-size: .78rem; }
+  .menu-utilisateur .btn-fantome { padding: .4rem .6rem; min-height: 38px; }
+
+  .duo { grid-template-columns: minmax(0, 1fr); }
+  .filtres { padding: .8rem; gap: .7rem; }
+  .filtres label { flex: 1 1 100%; }
+  .filtres input, .filtres select { width: 100%; min-height: var(--cible); }
+
+  /* Les deux champs date sont empiles : places cote a cote, leur largeur
+     intrinseque (elle croit avec la taille de police) ferait deborder
+     la carte de filtres sur un ecran de 360 px. */
+  .filtres .plage { width: 100%; flex-direction: column; align-items: stretch; gap: .35rem; }
+  .plage span { text-align: center; line-height: 1; }
+  /* `min-width: 0` autorise le champ a se retrecir sous sa largeur
+     intrinseque, au lieu de forcer l'elargissement du conteneur. */
+  .filtres .plage input { min-width: 0; }
+
+  .actions-filtres { margin-left: 0; width: 100%; }
+  .actions-filtres .btn-fantome { flex: 1 1 auto; min-height: var(--cible); }
+
+  /* Les champs du formulaire depose occupent toute la largeur et gagnent
+     en hauteur : moins d'erreurs de saisie sur petit ecran. */
+  input, select, textarea { min-height: var(--cible); font-size: 1rem; }
+  .opt span { min-height: var(--cible); display: flex; align-items: center; justify-content: center; }
+  /* Les libellés longs (Entrée / Sortie / Invest.) ne doivent pas etirer
+     la fiche : `minmax(0, 1fr)` + `min-width: 0` laissent la colonne
+     se retrecir sous la largeur du texte. */
+  .bascule { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bascule.trois { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .bascule .opt, .opt span { min-width: 0; }
+
+  .bascule.trois .opt span { font-size: .72rem; padding: .5rem .15rem; line-height: 1.25; }
+
+  .carte { padding: .9rem; }
+  .entete-liste { gap: .5rem; }
+  .boutons { flex-wrap: wrap; }
+  .boutons .btn-principal { flex: 1 1 100%; min-height: var(--cible); }
+
+  .ecran-connexion { padding: 1rem; align-items: flex-start; }
+  .boite-connexion { padding: 1.5rem 1.2rem; max-width: 420px; }
+  .logo-grand { font-size: 2.4rem; }
+  .boite-connexion h1 { font-size: 1.2rem; }
+
+  /* Sur mobile, passer de 14.5 px a 16 px empeche iOS de zoomer
+     automatiquement quand on pose le doigt sur un champ. */
+  .boite-connexion input { font-size: 1rem; }
+}
+
+/* ---------- Petit telephone ---------- */
+@media (max-width: 480px) {
+  /* Les colonnes secondaires (detail, unite, date de creation) sont
+     retirees : on garde l'information essentielle, celle qu'on lit. */
+  .col-secondaire { display: none !important; }
+
+  /* Pas de double defilement : la page defile normalement, l'en-tete du
+     tableau reste colle en haut grace a `position: sticky`. */
+  .tableau-defilant { max-height: none; overflow-x: auto; }
+
+  table { font-size: .8rem; }
+  thead th { padding: .45rem .3rem; font-size: .66rem; }
+  tbody td { padding: .45rem .3rem; }
+
+  /* "Modifier" et "Supprimer" empilés : gagne ~70 px de largeur utile. */
+  .actions { white-space: normal; }
+  .actions .lien { display: block; padding: .15rem 0; }
+
+  /* En dessous de 480 px, chaque lien d'action atteint la taille
+     tactile minimale meme une fois empile. */
+  .actions .lien { min-height: 32px; line-height: 32px; }
+
+  .etiquette { font-size: .62rem; padding: .1rem .35rem; }
+
+  .kpi { padding: .8rem .9rem; }
+  .kpi strong { font-size: 1.45rem; }
+  .resume { gap: .4rem; font-size: .8rem; }
+  .puce { padding: .25rem .6rem; }
+
+  .menu-utilisateur .qui { display: none; }
+
+  /* Les fleches des champs numeriques occupent de la place et ne servent
+     presque jamais au doigt : on les masque, la saisie reste au clavier. */
+  input[type=number] { -moz-appearance: textfield; }
+  input[type=number]::-webkit-outer-spin-button,
+  input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+}
+
+/* ---------- Respect de la preference systeme ---------- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  /* Le defilement fluide devient abrupt : moins nauseabond pour certains. */
+  html { scroll-behavior: auto; }
+}
+
+/* ---------- Impression ----------
+   On imprime le journal : on retire la navigation, les filtres et les
+   boutons, on etale le tableau sur toute la page et on repete l'en-tete
+   de colonnes sur chaque page imprimee. */
+@media print {
+  :root { --ombre: none; }
+  body { background: #fff; font-size: 11pt; }
+  .topbar, .filtres, .toast, .attente, .saisie, .boutons, .actions, .onglets { display: none !important; }
+  .carte, .kpi, .tableau-defilant { border: 1px solid #94a3b8; box-shadow: none; background: #fff; }
+  .tableau-defilant { max-height: none; overflow: visible; }
+  table { font-size: 10pt; }
+  thead { display: table-header-group; }  /* repete en haut de chaque page */
+  tfoot { display: table-footer-group; }
+  tbody tr { break-inside: avoid; }        /* une ligne ne se coupe pas en deux */
+  thead th { position: static; background: #e2e8f0; }
+  tbody tr:nth-child(even) { background: #f8fafc; }
+  a[href]::after { content: ""; }          /* pas d'URL parasite en bas de page */
 }
